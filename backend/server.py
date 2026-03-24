@@ -614,7 +614,7 @@ async def sync_to_devops(request: DevOpsSyncRequest):
             return {
                 "success": True,
                 "commit_id": commit_id,
-                "message": f"Successfully synced all policies to Azure DevOps"
+                "message": "Successfully synced all policies to Azure DevOps"
             }
         else:
             # Single policy type
@@ -662,14 +662,31 @@ async def get_dashboard_stats():
     
     settings = await get_settings()
     
+    # Check if all required Azure AD credentials are configured
+    azure_configured = bool(
+        settings and 
+        settings.azure_tenant_id and 
+        settings.azure_client_id and 
+        settings.azure_client_secret
+    )
+    
+    # Check if all required DevOps credentials are configured
+    devops_configured = bool(
+        settings and 
+        settings.devops_org and 
+        settings.devops_project and 
+        settings.devops_repo and 
+        settings.devops_pat
+    )
+    
     return {
         "total_exports": total_exports,
         "synced_exports": synced_exports,
         "pending_sync": total_exports - synced_exports,
         "policy_type_counts": policy_type_counts,
         "recent_exports": recent_exports,
-        "azure_configured": bool(settings and settings.azure_tenant_id),
-        "devops_configured": bool(settings and settings.devops_org)
+        "azure_configured": azure_configured,
+        "devops_configured": devops_configured
     }
 
 # Include the router
