@@ -1,0 +1,136 @@
+{
+  "identity": {
+    "name": "E1 - The Sterile Laboratory",
+    "persona": "A precision-obsessed designer who believes UI tools should feel like medical instruments. Zero fluff, high density, absolute clarity. If it doesn't help the user deploy faster, delete it.",
+    "principles": [
+      "Information Density > Whitespace: IT Admins need to scan 50 rows in seconds.",
+      "The 'Pilot's Cockpit': Controls must be distinct, labeled, and provide immediate feedback.",
+      "No 'Happy' Colors: Use colors only for signal (Red=Stop, Green=Go, Blue=Action). No decoration.",
+      "Monospace is King: Any ID, hash, or code snippet must be distinct from UI text.",
+      "Linearity: Workflows should flow top-to-bottom, left-to-right. No zigzagging."
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Chivo, sans-serif",
+      "body": "Inter, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "installation": "Add these fonts via Google Fonts in index.html: <link href='https://fonts.googleapis.com/css2?family=Chivo:wght@300;400;600;900&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap' rel='stylesheet'>",
+    "usage_rules": [
+      "Headings (h1-h3): Use 'Chivo' with 'tracking-tight'. Weight: 600 or 900.",
+      "Body Text: Use 'Inter'. Size: 'text-sm' (14px) is the standard. 'text-xs' (12px) for metadata.",
+      "Data/IDs: ALWAYS use 'JetBrains Mono'. This applies to Policy IDs, Tenant IDs, and JSON content.",
+      "Labels: Uppercase, 'text-[10px]', 'tracking-widest', 'text-muted-foreground', 'font-semibold'."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "background": "#FAFAFA",
+      "surface": "#FFFFFF",
+      "border": "#E4E4E7",
+      "primary": "#0F172A",
+      "primary_foreground": "#FFFFFF",
+      "accent": "#0052CC",
+      "accent_hover": "#0043A6",
+      "signal_success": "#10B981",
+      "signal_error": "#EF4444",
+      "signal_warning": "#F59E0B",
+      "text_main": "#18181B",
+      "text_muted": "#71717A"
+    },
+    "semantic_usage": {
+      "primary_action": "bg-[#0052CC] hover:bg-[#0043A6] text-white shadow-sm",
+      "destructive_action": "bg-white border border-red-200 text-red-600 hover:bg-red-50",
+      "status_active": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "status_inactive": "bg-zinc-100 text-zinc-600 border-zinc-200",
+      "status_error": "bg-red-50 text-red-700 border-red-200",
+      "json_key": "text-purple-700",
+      "json_string": "text-green-700",
+      "json_number": "text-orange-600",
+      "json_boolean": "text-blue-600"
+    }
+  },
+  "layout_strategy": {
+    "grid_system": "Bento Grid Mode B (High Density)",
+    "spacing": {
+      "container_padding": "p-6 md:p-8",
+      "item_gap": "gap-4",
+      "internal_padding": "p-4"
+    },
+    "sidebar": {
+      "width": "w-64",
+      "style": "bg-white border-r border-zinc-200 h-screen fixed left-0 top-0 z-50",
+      "link_style": "flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-md text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
+    },
+    "main_content": {
+      "margin": "ml-64",
+      "max_width": "max-w-7xl mx-auto"
+    }
+  },
+  "components": {
+    "cards": {
+      "style": "bg-white border border-zinc-200 rounded-sm shadow-[0_1px_2px_rgba(0,0,0,0.02)]",
+      "header": "px-4 py-3 border-b border-zinc-100 flex justify-between items-center",
+      "body": "p-4"
+    },
+    "buttons": {
+      "primary": "rounded-sm font-medium text-sm h-9 px-4 shadow-sm",
+      "secondary": "bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-50 rounded-sm h-9 px-4",
+      "ghost": "hover:bg-zinc-100 text-zinc-600 rounded-sm h-8 w-8 p-0"
+    },
+    "badges": {
+      "style": "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border"
+    },
+    "tables": {
+      "header": "bg-zinc-50 text-zinc-500 text-xs uppercase tracking-wider font-medium border-b border-zinc-200",
+      "row": "bg-white border-b border-zinc-100 hover:bg-zinc-50/50 transition-colors",
+      "cell": "px-4 py-3 text-sm text-zinc-900"
+    },
+    "json_viewer": {
+      "wrapper": "font-mono text-xs bg-zinc-50 border border-zinc-200 rounded-sm p-4 overflow-auto max-h-[600px]",
+      "syntax_colors": "Use semantic_usage colors for keys/values"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "stroke-width={1.5} size={18} className='text-zinc-500'",
+    "mapping": {
+      "dashboard": "LayoutDashboard",
+      "policies": "FileText",
+      "compliance": "ShieldCheck",
+      "devices": "Smartphone",
+      "sync": "RefreshCw",
+      "settings": "Settings",
+      "export": "Download",
+      "azure": "Cloud",
+      "devops": "GitBranch",
+      "success": "CheckCircle2",
+      "error": "AlertCircle"
+    }
+  },
+  "animations": {
+    "micro_interactions": {
+      "button_click": "active:scale-[0.98] transition-transform",
+      "card_hover": "hover:border-zinc-300 transition-colors duration-200",
+      "row_hover": "transition-colors duration-150"
+    },
+    "transitions": "transition-all duration-200 ease-in-out"
+  },
+  "instructions_to_main_agent": [
+    "1. SETUP: Ensure 'lucide-react', 'recharts' (if needed for stats), and 'clsx'/'tailwind-merge' are installed.",
+    "2. THEME: Force LIGHT mode. Do not implement dark mode toggles unless absolutely necessary. This is a day-job tool.",
+    "3. LOADING STATES: Graph API is slow. Skeletons are mandatory. Use <Skeleton className='h-4 w-[250px]' /> from shadcn.",
+    "4. ERROR HANDLING: If an export fails, show a 'Sonner' toast with the specific error code from Microsoft Graph.",
+    "5. EMPTY STATES: If no policies are found, show a clean state with a 'Sync Now' button. Do not leave blank space.",
+    "6. JSON VIEW: When viewing a policy, use a split view or a slide-over sheet. Do not navigate away from the list.",
+    "7. DEVOPS SYNC: The 'Push to DevOps' action is the most critical feature. Make it prominent (primary color) and provide detailed feedback steps (Connecting -> Pushing -> Committing -> Done)."
+  ],
+  "universal_guidelines": [
+    "Avoid gradients entirely. Use solid colors.",
+    "Borders should be crisp (1px).",
+    "Shadows should be minimal to non-existent.",
+    "Data density is high - reduce padding in tables compared to marketing pages.",
+    "Use Tooltips for long IDs or descriptions that get truncated."
+  ]
+}
