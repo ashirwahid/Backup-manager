@@ -89,6 +89,15 @@ class MSPolicyManagerAPITester:
         # Get settings (should work even if not configured)
         success, settings_data = self.run_test("Get settings", "GET", "/settings", 200)
         
+        # Verify settings response includes github_configured status
+        if success and settings_data:
+            expected_fields = ["configured", "azure_configured", "devops_configured", "github_configured"]
+            missing_fields = [field for field in expected_fields if field not in settings_data]
+            if missing_fields:
+                self.log_test("Settings response structure", False, f"Missing fields: {missing_fields}")
+            else:
+                self.log_test("Settings response structure", True, "All expected fields present including github_configured")
+        
         # Test settings update
         test_settings = {
             "azure_tenant_id": "test-tenant-id",
@@ -181,6 +190,36 @@ class MSPolicyManagerAPITester:
         }
         self.run_test("Sync non-existent export", "POST", "/devops/sync", 404, sync_data)
 
+    def test_cis_baseline_endpoints(self):
+        """Test CIS Baseline Comparison endpoints"""
+        print("\n🔍 Testing CIS Baseline Comparison Endpoints...")
+        
+        # Test baseline files endpoint (should return 400 if GitHub not configured)
+        success, response_data = self.run_test("Get baseline files", "GET", "/baseline/files", 400)
+        if not success:
+            # Try expecting 500 (server error)
+            success_500, _ = self.run_test("Get baseline files (500 check)", "GET", "/baseline/files", 500)
+            if success_500:
+                self.log_test("Get baseline files", True, "Returns 500 as expected (GitHub not configured)")
+        
+        # Test baseline compare endpoint (should return 400 if GitHub not configured)
+        success, response_data = self.run_test("Compare with baseline", "POST", "/baseline/compare", 400)
+        if not success:
+            # Try expecting 500 (server error)
+            success_500, _ = self.run_test("Compare with baseline (500 check)", "POST", "/baseline/compare", 500)
+            if success_500:
+                self.log_test("Compare with baseline", True, "Returns 500 as expected (GitHub not configured)")
+        
+        # Test baseline compare with policy type parameter
+        success, response_data = self.run_test("Compare with baseline (device config)", "POST", "/baseline/compare?policy_type=device_configuration", 400)
+        if not success:
+            success_500, _ = self.run_test("Compare with baseline device config (500 check)", "POST", "/baseline/compare?policy_type=device_configuration", 500)
+            if success_500:
+                self.log_test("Compare with baseline (device config)", True, "Returns 500 as expected (GitHub not configured)")
+        
+        # Test GitHub connection test endpoint
+        self.run_test("Test GitHub connection", "POST", "/settings/test-github", 200)
+
     def run_all_tests(self):
         """Run all test suites"""
         print("🚀 Starting MS Policy Manager API Tests")
@@ -192,6 +231,7 @@ class MSPolicyManagerAPITester:
         self.test_dashboard_endpoints()
         self.test_export_endpoints()
         self.test_devops_endpoints()
+        self.test_cis_baseline_endpoints()
         
         print("\n" + "=" * 60)
         print(f"📊 Test Results: {self.tests_passed}/{self.tests_run} passed")

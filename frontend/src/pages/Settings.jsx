@@ -12,7 +12,8 @@ import {
   AlertCircle,
   Loader2,
   Save,
-  TestTube
+  TestTube,
+  Github
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ const SettingsPage = () => {
   const [saving, setSaving] = useState(false);
   const [testingAzure, setTestingAzure] = useState(false);
   const [testingDevOps, setTestingDevOps] = useState(false);
+  const [testingGithub, setTestingGithub] = useState(false);
   const [showSecrets, setShowSecrets] = useState({});
   
   const [settings, setSettings] = useState({
@@ -35,12 +37,17 @@ const SettingsPage = () => {
     devops_project: "",
     devops_repo: "",
     devops_pat: "",
-    devops_branch: "main"
+    devops_branch: "main",
+    github_repo_url: "",
+    github_branch: "main",
+    github_baseline_path: "/",
+    github_pat: ""
   });
 
   const [configStatus, setConfigStatus] = useState({
     azure_configured: false,
-    devops_configured: false
+    devops_configured: false,
+    github_configured: false
   });
 
   const fetchSettings = async () => {
@@ -49,7 +56,8 @@ const SettingsPage = () => {
       const response = await axios.get(`${API}/settings`);
       setConfigStatus({
         azure_configured: response.data.azure_configured,
-        devops_configured: response.data.devops_configured
+        devops_configured: response.data.devops_configured,
+        github_configured: response.data.github_configured
       });
       
       // Only set non-sensitive data
@@ -58,7 +66,10 @@ const SettingsPage = () => {
         devops_org: response.data.devops_org || "",
         devops_project: response.data.devops_project || "",
         devops_repo: response.data.devops_repo || "",
-        devops_branch: response.data.devops_branch || "main"
+        devops_branch: response.data.devops_branch || "main",
+        github_repo_url: response.data.github_repo_url || "",
+        github_branch: response.data.github_branch || "main",
+        github_baseline_path: response.data.github_baseline_path || "/"
       }));
     } catch (err) {
       toast.error("Failed to fetch settings");
@@ -128,6 +139,23 @@ const SettingsPage = () => {
       toast.error("Failed to test DevOps connection");
     } finally {
       setTestingDevOps(false);
+    }
+  };
+
+  const testGithubConnection = async () => {
+    try {
+      setTestingGithub(true);
+      const response = await axios.post(`${API}/settings/test-github`);
+      
+      if (response.data.success) {
+        toast.success(response.data.message);
+      } else {
+        toast.error(response.data.message);
+      }
+    } catch (err) {
+      toast.error("Failed to test GitHub connection");
+    } finally {
+      setTestingGithub(false);
     }
   };
 
@@ -421,6 +449,139 @@ const SettingsPage = () => {
               <li>Set expiration as needed (recommended: 90-180 days)</li>
               <li>Copy the token immediately (shown only once)</li>
               <li>Create or select a repository to store policies</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      {/* GitHub CIS Baseline Settings */}
+      <div className="card-base">
+        <div className="card-header">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-sm bg-zinc-900 flex items-center justify-center">
+              <Github className="w-4 h-4 text-white" strokeWidth={1.5} />
+            </div>
+            <div>
+              <h2 className="font-heading text-sm font-semibold text-zinc-900">
+                GitHub CIS Baseline
+              </h2>
+              <p className="text-xs text-zinc-500">
+                Repository containing CIS baseline policies for comparison
+              </p>
+            </div>
+          </div>
+          {configStatus.github_configured ? (
+            <span className="badge-success inline-flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" />
+              Configured
+            </span>
+          ) : (
+            <span className="badge-warning inline-flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              Not Configured
+            </span>
+          )}
+        </div>
+        
+        <div className="card-body space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="github_repo_url" className="label-text">
+                Repository (owner/repo)
+              </Label>
+              <Input
+                id="github_repo_url"
+                data-testid="github-repo-url-input"
+                value={settings.github_repo_url}
+                onChange={(e) => handleChange("github_repo_url", e.target.value)}
+                placeholder="microsoft/cis-baseline"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="github_branch" className="label-text">
+                Branch
+              </Label>
+              <Input
+                id="github_branch"
+                data-testid="github-branch-input"
+                value={settings.github_branch}
+                onChange={(e) => handleChange("github_branch", e.target.value)}
+                placeholder="main"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="github_baseline_path" className="label-text">
+                Baseline Path (folder containing JSONs)
+              </Label>
+              <Input
+                id="github_baseline_path"
+                data-testid="github-baseline-path-input"
+                value={settings.github_baseline_path}
+                onChange={(e) => handleChange("github_baseline_path", e.target.value)}
+                placeholder="/ or /policies"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="github_pat" className="label-text">
+                Personal Access Token (optional for public repos)
+              </Label>
+              <div className="relative">
+                <Input
+                  id="github_pat"
+                  data-testid="github-pat-input"
+                  type={showSecrets.github_pat ? "text" : "password"}
+                  value={settings.github_pat}
+                  onChange={(e) => handleChange("github_pat", e.target.value)}
+                  placeholder="ghp_..."
+                  className="pr-10 font-mono text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleShowSecret("github_pat")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                >
+                  {showSecrets.github_pat ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center pt-2">
+            <Button
+              data-testid="test-github-btn"
+              variant="outline"
+              onClick={testGithubConnection}
+              disabled={testingGithub || !configStatus.github_configured}
+              className="gap-2"
+            >
+              {testingGithub ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <TestTube className="w-4 h-4" />
+              )}
+              Test Connection
+            </Button>
+          </div>
+
+          {/* Setup Instructions */}
+          <div className="mt-4 p-4 bg-zinc-50 rounded-sm">
+            <h3 className="text-xs font-semibold text-zinc-700 uppercase tracking-wider mb-2">
+              Setup Instructions
+            </h3>
+            <ol className="text-xs text-zinc-600 space-y-1 list-decimal list-inside">
+              <li>Create or identify a GitHub repository with your CIS baseline JSONs</li>
+              <li>Enter the repository as "owner/repo" (e.g., "microsoft/cis-baseline")</li>
+              <li>Specify the branch and path where baseline JSONs are stored</li>
+              <li>For private repos, create a PAT with "repo" scope at GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</li>
             </ol>
           </div>
         </div>
