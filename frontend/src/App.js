@@ -10,7 +10,8 @@ import {
   RefreshCw,
   Settings,
   GitBranch,
-  Cloud
+  Cloud,
+  GitCompare
 } from "lucide-react";
 
 // Pages
@@ -18,6 +19,7 @@ import Dashboard from "@/pages/Dashboard";
 import Policies from "@/pages/Policies";
 import DevOpsSync from "@/pages/DevOpsSync";
 import SettingsPage from "@/pages/Settings";
+import CISComparison from "@/pages/CISComparison";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -27,6 +29,7 @@ const Sidebar = () => {
   const navItems = [
     { path: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
     { path: "/policies", icon: FileText, label: "Policies" },
+    { path: "/cis-comparison", icon: GitCompare, label: "CIS Comparison" },
     { path: "/devops", icon: GitBranch, label: "DevOps Sync" },
     { path: "/settings", icon: Settings, label: "Settings" },
   ];
@@ -92,6 +95,7 @@ function App() {
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/policies" element={<Policies />} />
+              <Route path="/cis-comparison" element={<CISComparison />} />
               <Route path="/devops" element={<DevOpsSync />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
