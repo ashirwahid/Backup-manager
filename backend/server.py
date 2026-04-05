@@ -185,6 +185,134 @@ class MSGraphClient:
         """Get device compliance policies"""
         result = await self._make_request("/deviceManagement/deviceCompliancePolicies")
         return result.get("value", [])
+    
+    # ============== Deploy/Delete Methods ==============
+    
+    async def _post_request(self, endpoint: str, data: Dict) -> Dict:
+        """Make authenticated POST request to Graph API"""
+        token = await self.get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, headers=headers, json=data)
+            
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 30))
+                logger.warning(f"Rate limited, waiting {retry_after}s")
+                await asyncio.sleep(retry_after)
+                return await self._post_request(endpoint, data)
+            
+            response.raise_for_status()
+            return response.json() if response.content else {}
+    
+    async def _delete_request(self, endpoint: str) -> bool:
+        """Make authenticated DELETE request to Graph API"""
+        token = await self.get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.delete(url, headers=headers)
+            
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 30))
+                logger.warning(f"Rate limited, waiting {retry_after}s")
+                await asyncio.sleep(retry_after)
+                return await self._delete_request(endpoint)
+            
+            response.raise_for_status()
+            return True
+    
+    async def _patch_request(self, endpoint: str, data: Dict) -> Dict:
+        """Make authenticated PATCH request to Graph API"""
+        token = await self.get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.patch(url, headers=headers, json=data)
+            
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 30))
+                logger.warning(f"Rate limited, waiting {retry_after}s")
+                await asyncio.sleep(retry_after)
+                return await self._patch_request(endpoint, data)
+            
+            response.raise_for_status()
+            return response.json() if response.content else {}
+    
+    def _clean_policy_for_create(self, policy: Dict, policy_type: str) -> Dict:
+        """Remove read-only fields before creating a policy"""
+        # Fields that are read-only and should not be sent when creating
+        readonly_fields = [
+            "id", "@odata.type", "createdDateTime", "lastModifiedDateTime",
+            "version", "createdBy", "lastModifiedBy", "roleScopeTagIds",
+            "@odata.context", "settingCount"
+        ]
+        
+        cleaned = {k: v for k, v in policy.items() if k not in readonly_fields}
+        return cleaned
+    
+    # Device Configuration Policies
+    async def create_device_configuration(self, policy: Dict) -> Dict:
+        """Create a device configuration policy"""
+        cleaned = self._clean_policy_for_create(policy, "device_configuration")
+        # Need to include @odata.type for creation
+        if "@odata.type" in policy:
+            cleaned["@odata.type"] = policy["@odata.type"]
+        return await self._post_request("/deviceManagement/deviceConfigurations", cleaned)
+    
+    async def delete_device_configuration(self, policy_id: str) -> bool:
+        """Delete a device configuration policy"""
+        return await self._delete_request(f"/deviceManagement/deviceConfigurations/{policy_id}")
+    
+    # Configuration Policies (Settings Catalog)
+    async def create_configuration_policy(self, policy: Dict) -> Dict:
+        """Create a configuration policy (Settings Catalog)"""
+        cleaned = self._clean_policy_for_create(policy, "configuration")
+        return await self._post_request("/deviceManagement/configurationPolicies", cleaned)
+    
+    async def delete_configuration_policy(self, policy_id: str) -> bool:
+        """Delete a configuration policy"""
+        return await self._delete_request(f"/deviceManagement/configurationPolicies/{policy_id}")
+    
+    # Conditional Access Policies
+    async def create_conditional_access_policy(self, policy: Dict) -> Dict:
+        """Create a conditional access policy"""
+        cleaned = self._clean_policy_for_create(policy, "conditional_access")
+        # Set state to disabled by default for safety
+        if "state" not in cleaned:
+            cleaned["state"] = "disabled"
+        return await self._post_request("/identity/conditionalAccess/policies", cleaned)
+    
+    async def delete_conditional_access_policy(self, policy_id: str) -> bool:
+        """Delete a conditional access policy"""
+        return await self._delete_request(f"/identity/conditionalAccess/policies/{policy_id}")
+    
+    # Compliance Policies
+    async def create_compliance_policy(self, policy: Dict) -> Dict:
+        """Create a compliance policy"""
+        cleaned = self._clean_policy_for_create(policy, "compliance")
+        if "@odata.type" in policy:
+            cleaned["@odata.type"] = policy["@odata.type"]
+        return await self._post_request("/deviceManagement/deviceCompliancePolicies", cleaned)
+    
+    async def delete_compliance_policy(self, policy_id: str) -> bool:
+        """Delete a compliance policy"""
+        return await self._delete_request(f"/deviceManagement/deviceCompliancePolicies/{policy_id}")
 
 
 # ============== Azure DevOps Client ==============
@@ -995,6 +1123,224 @@ async def test_github_connection():
         return {"success": False, "message": str(e.detail)}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+# ============== Deploy/Delete Policy Endpoints ==============
+
+class DeployPolicyRequest(BaseModel):
+    policy: Dict[str, Any]
+    policy_type: str  # device_configuration, configuration, conditional_access, compliance
+
+class DeletePolicyRequest(BaseModel):
+    policy_id: str
+    policy_type: str
+
+class BulkDeployRequest(BaseModel):
+    policies: List[Dict[str, Any]]
+    policy_type: str
+
+class BulkDeleteRequest(BaseModel):
+    policy_ids: List[str]
+    policy_type: str
+
+
+@api_router.post("/deploy/policy")
+async def deploy_policy(request: DeployPolicyRequest):
+    """Deploy a single policy from baseline to tenant"""
+    try:
+        graph_client = await get_graph_client()
+        
+        policy_type = request.policy_type
+        policy = request.policy
+        
+        result = None
+        if policy_type == "device_configuration":
+            result = await graph_client.create_device_configuration(policy)
+        elif policy_type == "configuration":
+            result = await graph_client.create_configuration_policy(policy)
+        elif policy_type == "conditional_access":
+            result = await graph_client.create_conditional_access_policy(policy)
+        elif policy_type == "compliance":
+            result = await graph_client.create_compliance_policy(policy)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown policy type: {policy_type}")
+        
+        # Log deployment
+        deployment_record = {
+            "id": str(uuid.uuid4()),
+            "action": "deploy",
+            "policy_type": policy_type,
+            "policy_name": policy.get("displayName") or policy.get("name", "Unknown"),
+            "created_policy_id": result.get("id"),
+            "deployed_at": datetime.now(timezone.utc).isoformat(),
+            "status": "success"
+        }
+        await db.deployments.insert_one(deployment_record)
+        
+        return {
+            "success": True,
+            "message": f"Policy '{policy.get('displayName', 'Unknown')}' deployed successfully",
+            "created_policy": result
+        }
+        
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        error_detail = e.response.text if e.response else str(e)
+        logger.error(f"Failed to deploy policy: {error_detail}")
+        raise HTTPException(status_code=e.response.status_code if e.response else 500, detail=error_detail)
+    except Exception as e:
+        logger.error(f"Failed to deploy policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.delete("/deploy/policy")
+async def delete_policy(request: DeletePolicyRequest):
+    """Delete a policy from tenant"""
+    try:
+        graph_client = await get_graph_client()
+        
+        policy_type = request.policy_type
+        policy_id = request.policy_id
+        
+        success = False
+        if policy_type == "device_configuration":
+            success = await graph_client.delete_device_configuration(policy_id)
+        elif policy_type == "configuration":
+            success = await graph_client.delete_configuration_policy(policy_id)
+        elif policy_type == "conditional_access":
+            success = await graph_client.delete_conditional_access_policy(policy_id)
+        elif policy_type == "compliance":
+            success = await graph_client.delete_compliance_policy(policy_id)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown policy type: {policy_type}")
+        
+        # Log deletion
+        deployment_record = {
+            "id": str(uuid.uuid4()),
+            "action": "delete",
+            "policy_type": policy_type,
+            "policy_id": policy_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "status": "success" if success else "failed"
+        }
+        await db.deployments.insert_one(deployment_record)
+        
+        return {
+            "success": success,
+            "message": f"Policy deleted successfully" if success else "Failed to delete policy"
+        }
+        
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        error_detail = e.response.text if e.response else str(e)
+        logger.error(f"Failed to delete policy: {error_detail}")
+        raise HTTPException(status_code=e.response.status_code if e.response else 500, detail=error_detail)
+    except Exception as e:
+        logger.error(f"Failed to delete policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/deploy/bulk")
+async def bulk_deploy_policies(request: BulkDeployRequest):
+    """Deploy multiple policies from baseline to tenant"""
+    try:
+        graph_client = await get_graph_client()
+        
+        results = []
+        for policy in request.policies:
+            try:
+                result = None
+                if request.policy_type == "device_configuration":
+                    result = await graph_client.create_device_configuration(policy)
+                elif request.policy_type == "configuration":
+                    result = await graph_client.create_configuration_policy(policy)
+                elif request.policy_type == "conditional_access":
+                    result = await graph_client.create_conditional_access_policy(policy)
+                elif request.policy_type == "compliance":
+                    result = await graph_client.create_compliance_policy(policy)
+                
+                results.append({
+                    "policy_name": policy.get("displayName") or policy.get("name", "Unknown"),
+                    "success": True,
+                    "created_id": result.get("id") if result else None
+                })
+            except Exception as e:
+                results.append({
+                    "policy_name": policy.get("displayName") or policy.get("name", "Unknown"),
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        successful = sum(1 for r in results if r["success"])
+        failed = len(results) - successful
+        
+        return {
+            "success": failed == 0,
+            "message": f"Deployed {successful} policies, {failed} failed",
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed bulk deploy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/deploy/bulk-delete")
+async def bulk_delete_policies(request: BulkDeleteRequest):
+    """Delete multiple policies from tenant"""
+    try:
+        graph_client = await get_graph_client()
+        
+        results = []
+        for policy_id in request.policy_ids:
+            try:
+                success = False
+                if request.policy_type == "device_configuration":
+                    success = await graph_client.delete_device_configuration(policy_id)
+                elif request.policy_type == "configuration":
+                    success = await graph_client.delete_configuration_policy(policy_id)
+                elif request.policy_type == "conditional_access":
+                    success = await graph_client.delete_conditional_access_policy(policy_id)
+                elif request.policy_type == "compliance":
+                    success = await graph_client.delete_compliance_policy(policy_id)
+                
+                results.append({
+                    "policy_id": policy_id,
+                    "success": success
+                })
+            except Exception as e:
+                results.append({
+                    "policy_id": policy_id,
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        successful = sum(1 for r in results if r["success"])
+        failed = len(results) - successful
+        
+        return {
+            "success": failed == 0,
+            "message": f"Deleted {successful} policies, {failed} failed",
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed bulk delete: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/deploy/history")
+async def get_deployment_history():
+    """Get deployment history"""
+    deployments = await db.deployments.find({}, {"_id": 0}).sort("deployed_at", -1).to_list(100)
+    return {"deployments": deployments, "count": len(deployments)}
+
 
 # Include the router
 app.include_router(api_router)
