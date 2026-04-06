@@ -292,10 +292,35 @@ class MSGraphClient:
     # Conditional Access Policies
     async def create_conditional_access_policy(self, policy: Dict) -> Dict:
         """Create a conditional access policy"""
+
+        if "policy" in policy and isinstance(policy["policy"], dict):
+            policy = policy["policy"]
+        elif "baseline" in policy and isinstance(policy["baseline"], dict):
+            policy = policy["baseline"]
+
         cleaned = self._clean_policy_for_create(policy, "conditional_access")
-        # Set state to disabled by default for safety
-        if "state" not in cleaned:
+
+        # Convert baseline metadata to Graph field
+        if not cleaned.get("displayName"):
+            cleaned["displayName"] = (
+                cleaned.get("$friendlyName")
+                or cleaned.get("name")
+            )
+
+        if not cleaned.get("displayName"):
+            raise HTTPException(
+                status_code=400,
+                detail="Conditional Access policy payload is missing 'displayName'. Baseline can provide '$friendlyName'."
+            )
+
+        # Remove non-Graph metadata fields
+        cleaned.pop("$friendlyName", None)
+        cleaned.pop("$description", None)
+
+        if not cleaned.get("state"):
             cleaned["state"] = "disabled"
+
+        logger.info(f"Conditional Access create payload: {json.dumps(cleaned, indent=2)}")
         return await self._post_request("/identity/conditionalAccess/policies", cleaned)
     
     async def delete_conditional_access_policy(self, policy_id: str) -> bool:
@@ -319,14 +344,35 @@ class MSGraphClient:
 
 class AzureDevOpsClient:
     def __init__(self, org: str, project: str, repo: str, pat: str, branch: str = "main"):
+        org = (org or "").strip()
+        project = (project or "").strip().strip("/")
+        repo = (repo or "").strip().strip("/")
+        branch = (branch or "main").strip()
+
+        # If user pasted full Azure DevOps URL, extract organization
+        if org.startswith("https://dev.azure.com/"):
+            org = org.replace("https://dev.azure.com/", "").strip("/").split("/")[0]
+
         self.org = org
         self.project = project
         self.repo = repo
         self.pat = pat
         self.branch = branch
-        self.base_url = f"https://dev.azure.com/{org}"
-        self.repo_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo}"
-        
+
+        self.base_url = f"https://dev.azure.com/{self.org}"
+        self.repo_url = f"{self.base_url}/{self.project}/_apis/git/repositories/{self.repo}"
+
+def transform_conditional_access_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": policy.get("id"),
+        "displayName": policy.get("displayName"),
+        "state": policy.get("state"),
+        "conditions": policy.get("conditions", {}),
+        "grantControls": policy.get("grantControls"),
+        "sessionControls": policy.get("sessionControls"),
+        "templateId": policy.get("templateId")
+    }
+  
     def _get_auth_header(self) -> Dict[str, str]:
         """Create authorization header"""
         credentials = f":{self.pat}"
@@ -422,10 +468,15 @@ async def get_graph_client() -> MSGraphClient:
     return MSGraphClient(settings.azure_tenant_id, settings.azure_client_id, settings.azure_client_secret)
 
 async def get_devops_client() -> AzureDevOpsClient:
-    """Get Azure DevOps client from stored settings"""
     settings = await get_settings()
     if not settings or not all([settings.devops_org, settings.devops_project, settings.devops_repo, settings.devops_pat]):
         raise HTTPException(status_code=400, detail="Azure DevOps credentials not configured. Please update settings.")
+
+    logger.info(f"DevOps org: {settings.devops_org}")
+    logger.info(f"DevOps project: {settings.devops_project}")
+    logger.info(f"DevOps repo: {settings.devops_repo}")
+    logger.info(f"DevOps branch: {settings.devops_branch}")
+
     return AzureDevOpsClient(
         settings.devops_org, 
         settings.devops_project, 
@@ -583,22 +634,26 @@ async def export_conditional_access():
     try:
         graph_client = await get_graph_client()
         policies = await graph_client.get_conditional_access_policies()
-        
+
+        transformed_policies = [
+            transform_conditional_access_policy(policy) for policy in policies
+        ]
+
         export_record = {
             "id": str(uuid.uuid4()),
             "policy_type": "conditional_access",
-            "policy_count": len(policies),
-            "policies": policies,
+            "policy_count": len(transformed_policies),
+            "policies": transformed_policies,
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "synced_to_devops": False
         }
         await db.exports.insert_one(export_record)
-        
+
         return {
             "export_id": export_record["id"],
             "policy_type": "conditional_access",
-            "policy_count": len(policies),
-            "policies": policies,
+            "policy_count": len(transformed_policies),
+            "policies": transformed_policies,
             "exported_at": export_record["exported_at"]
         }
     except HTTPException:
@@ -606,7 +661,7 @@ async def export_conditional_access():
     except Exception as e:
         logger.error(f"Failed to export conditional access policies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @api_router.get("/policies/compliance")
 async def export_compliance_policies():
     """Export device compliance policies"""
