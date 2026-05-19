@@ -1,13 +1,11 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect, useMemo } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { 
-  GitCompare, 
-  RefreshCw,
+import {
+  GitCompare,
   CheckCircle2,
   AlertTriangle,
-  XCircle,
   Plus,
   Loader2,
   Eye,
@@ -15,19 +13,51 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  Folder,
   Shield,
+  Cloud,
   Upload,
   Trash2,
-  Check,
   Square,
-  CheckSquare
+  CheckSquare,
+  History,
+  Users,
 } from "lucide-react";
+import {
+  POLICY_KIND_FILTER_LABELS,
+  POLICY_KIND_LABELS,
+  POLICY_KIND_ORDER,
+  policyKindLabel,
+  buildFolderSectionsWithDependencies,
+  detectPolicyType,
+  formatDiffValue,
+  getDependencyDisplayLines,
+  getFolderSectionShortLabel,
+  getPolicyCompareKey,
+  getPolicyDisplayName,
+  getPolicyItemId,
+  getPolicySubtitle,
+  stripDeployMetadata,
+} from "@/lib/cisComparisonUtils";
+import {
+  buildPendingOperationsFromDeleteAction,
+  buildPendingOperationsFromDeployAction,
+} from "@/lib/deploymentOperations";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -55,6 +85,10 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
+import {
+  isRequestAborted,
+  useCancellableRequests,
+} from "@/lib/useCancellableRequests";
 
 // JSON Syntax Highlighter
 const JsonViewer = ({ data }) => {
@@ -91,8 +125,100 @@ const JsonViewer = ({ data }) => {
   );
 };
 
+const directoryDepKey = (depKind, objectId) => `${depKind}:${objectId}`;
+
+const dependencyDirectoryLabel = (doc, objectId, depKind) =>
+  getDependencyDisplayLines(doc, objectId, depKind).primary;
+
+/** Full policy / group name with optional subtitle; wraps instead of truncating. */
+const PolicyRowLabel = ({
+  title,
+  subtitle,
+  className = "",
+  titleClassName = "text-sm font-medium text-zinc-900",
+}) => {
+  if (!title) return null;
+  const body = (
+    <div className={`min-w-0 flex-1 text-left ${className}`}>
+      <p className={`${titleClassName} break-words leading-snug`}>{title}</p>
+      {subtitle && (
+        <p className="mt-0.5 break-all font-mono text-[10px] leading-tight text-zinc-500">
+          {subtitle}
+        </p>
+      )}
+    </div>
+  );
+  if (title.length < 48 && (!subtitle || subtitle.length < 64)) {
+    return body;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="min-w-0 flex-1 cursor-default text-left">{body}</div>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        className="max-w-sm bg-zinc-900 text-zinc-50 text-xs leading-relaxed"
+      >
+        <p className="font-medium">{title}</p>
+        {subtitle && <p className="mt-1 font-mono opacity-90">{subtitle}</p>}
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
+const rowPolicyFromItem = (item, category) => {
+  if (category === "tenant_only" || category === "baseline_only") return item.policy;
+  return item.tenant || item.baseline;
+};
+
+const filterComparisonByPolicyId = (comparison, policyId) => {
+  if (!comparison || !policyId) return comparison;
+  const matches = (item, category) => {
+    const row = rowPolicyFromItem(item, category);
+    const id = getPolicyItemId(item, category);
+    const compareKey = getPolicyCompareKey(row);
+    if (policyId.endsWith(":assignments")) {
+      const baseId = policyId.slice(0, -":assignments".length);
+      return (
+        (id === baseId || compareKey === baseId) &&
+        row?._backupKind === "assignments"
+      );
+    }
+    return (
+      (id === policyId || compareKey === policyId) &&
+      row?._backupKind !== "assignments"
+    );
+  };
+  const filterCat = (list, category) =>
+    (list || []).filter((item) => matches(item, category));
+  return {
+    ...comparison,
+    tenant_only: filterCat(comparison.tenant_only, "tenant_only"),
+    baseline_only: filterCat(comparison.baseline_only, "baseline_only"),
+    conflicting: filterCat(comparison.conflicting, "conflicting"),
+    matching: filterCat(comparison.matching, "matching"),
+    summary: {
+      tenant_only_count: filterCat(comparison.tenant_only, "tenant_only").length,
+      baseline_only_count: filterCat(comparison.baseline_only, "baseline_only").length,
+      conflicting_count: filterCat(comparison.conflicting, "conflicting").length,
+      matching_count: filterCat(comparison.matching, "matching").length,
+    },
+  };
+};
+
 // Policy Card Component for each category
-const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, onDelete, isDeploying }) => {
+const PolicyCard = ({
+  item,
+  category,
+  onView,
+  onSelect,
+  isSelected,
+  onDeploy,
+  onDelete,
+  isDeploying,
+  diffLabels = { current: "Tenant", previous: "Baseline" },
+}) => {
   const [isOpen, setIsOpen] = useState(false);
   
   const getCategoryStyles = () => {
@@ -110,11 +236,17 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
     }
   };
 
-  const policyName = item.name || item.policy?.displayName || item.tenant?.displayName || "Unknown";
-  const policyId = item.policy?.id || item.tenant?.id;
+  const policyName = getPolicyDisplayName(item, category);
+  const policyId = getPolicyItemId(item, category);
+  const rowPolicy =
+    category === "tenant_only" || category === "baseline_only"
+      ? item.policy
+      : item.tenant || item.baseline;
+  const isAssignmentsRow = rowPolicy?._backupKind === "assignments";
+  const policySubtitle = getPolicySubtitle(rowPolicy, category, item);
 
   return (
-    <div className={`card-base mb-2 ${getCategoryStyles()} ${isSelected ? 'ring-2 ring-blue-500' : ''}`}>
+    <div className={`card-base mb-2 ${getCategoryStyles()} ${isSelected ? "ring-2 ring-blue-500" : ""}`}>
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <div className="flex items-center">
           {/* Checkbox for selection */}
@@ -134,23 +266,28 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
             </button>
           )}
           
-          <CollapsibleTrigger className="flex-1">
-            <div className="flex items-center justify-between p-3 pl-0 hover:bg-zinc-50/50 transition-colors">
-              <div className="flex items-center gap-2">
+          <CollapsibleTrigger className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2 p-3 pl-0 hover:bg-zinc-50/50 transition-colors">
+              <div className="flex min-w-0 flex-1 items-start gap-2">
                 {isOpen ? (
                   <ChevronDown className="w-4 h-4 text-zinc-400" />
                 ) : (
                   <ChevronRight className="w-4 h-4 text-zinc-400" />
                 )}
-                <span className="text-sm font-medium text-zinc-900 truncate max-w-[200px]">
-                  {policyName}
-                </span>
+                <PolicyRowLabel title={policyName} subtitle={policySubtitle} />
               </div>
-              {category === "conflicting" && item.differences && (
-                <Badge variant="outline" className="text-red-600 border-red-200">
-                  {item.differences.length} diff
-                </Badge>
-              )}
+              <div className="flex shrink-0 flex-col items-end gap-1">
+                {isAssignmentsRow && (
+                  <Badge variant="outline" className="text-violet-700 border-violet-200 text-[10px]">
+                    Assignments
+                  </Badge>
+                )}
+                {category === "conflicting" && item.differences && (
+                  <Badge variant="outline" className="text-red-600 border-red-200 text-[10px]">
+                    {item.differences.length} diff
+                  </Badge>
+                )}
+              </div>
             </div>
           </CollapsibleTrigger>
         </div>
@@ -160,28 +297,28 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
             {category === "conflicting" && item.differences && (
               <div className="mt-3 space-y-2">
                 <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Differences</p>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {item.differences.slice(0, 5).map((diff, idx) => (
+                <div className="space-y-2 max-h-56 overflow-y-auto">
+                  {item.differences.slice(0, 8).map((diff, idx) => (
                     <div key={idx} className="bg-zinc-50 rounded-sm p-2 text-xs">
                       <p className="font-medium text-zinc-700 mb-1">{diff.field}</p>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <div>
-                          <p className="text-[10px] text-zinc-400 uppercase">Tenant</p>
-                          <code className="font-mono text-blue-600 break-all text-[10px]">
-                            {JSON.stringify(diff.tenant_value)?.substring(0, 50)}
-                          </code>
+                          <p className="text-[10px] text-zinc-400 uppercase">{diffLabels.current}</p>
+                          <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-blue-700">
+                            {formatDiffValue(diff.tenant_value)}
+                          </pre>
                         </div>
                         <div>
-                          <p className="text-[10px] text-zinc-400 uppercase">Baseline</p>
-                          <code className="font-mono text-amber-600 break-all text-[10px]">
-                            {JSON.stringify(diff.baseline_value)?.substring(0, 50)}
-                          </code>
+                          <p className="text-[10px] text-zinc-400 uppercase">{diffLabels.previous}</p>
+                          <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-amber-700">
+                            {formatDiffValue(diff.baseline_value)}
+                          </pre>
                         </div>
                       </div>
                     </div>
                   ))}
-                  {item.differences.length > 5 && (
-                    <p className="text-xs text-zinc-400">+{item.differences.length - 5} more differences</p>
+                  {item.differences.length > 8 && (
+                    <p className="text-xs text-zinc-400">+{item.differences.length - 8} more differences</p>
                   )}
                 </div>
               </div>
@@ -215,8 +352,7 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
                 </Button>
               )}
               
-              {/* Delete button for tenant_only items */}
-              {category === "tenant_only" && (
+              {(category === "tenant_only" || category === "matching") && onDelete && (
                 <Button
                   variant="destructive"
                   size="sm"
@@ -232,6 +368,110 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
                   Remove
                 </Button>
               )}
+
+              {category === "conflicting" && onDeploy && (
+                <Button
+                  size="sm"
+                  onClick={() => onDeploy(item)}
+                  disabled={isDeploying}
+                  className="gap-1 text-xs bg-emerald-600 hover:bg-emerald-700"
+                >
+                  {isDeploying ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Upload className="w-3 h-3" />
+                  )}
+                  Deploy
+                </Button>
+              )}
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+};
+
+const DependencyDirectoryCard = ({
+  objectId,
+  depKind,
+  doc,
+  category,
+  onView,
+  directoryResolution,
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const lines = getDependencyDisplayLines(doc, objectId, depKind);
+  const missing = !doc && !directoryResolution?.loading;
+
+  const getCategoryStyles = () => {
+    switch (category) {
+      case "tenant_only":
+        return "border-l-4 border-l-blue-500 bg-blue-50/30";
+      case "baseline_only":
+        return "border-l-4 border-l-amber-500 bg-amber-50/30";
+      case "conflicting":
+        return "border-l-4 border-l-red-500 bg-red-50/30";
+      case "matching":
+        return "border-l-4 border-l-emerald-500 bg-emerald-50/30";
+      default:
+        return "";
+    }
+  };
+
+  return (
+    <div className={`card-base mb-2 ${getCategoryStyles()}`}>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger className="flex w-full items-center justify-between p-3 hover:bg-zinc-50/50">
+          <div className="flex min-w-0 items-center gap-2">
+            {isOpen ? (
+              <ChevronDown className="w-4 h-4 shrink-0 text-zinc-400" />
+            ) : (
+              <ChevronRight className="w-4 h-4 shrink-0 text-zinc-400" />
+            )}
+            <Users className="w-3.5 h-3.5 shrink-0 text-violet-600" />
+            <PolicyRowLabel
+              title={lines.primary}
+              subtitle={
+                lines.secondary
+                  ? `${lines.secondary} · ${lines.objectId}`
+                  : lines.objectId
+              }
+            />
+          </div>
+          <Badge variant="outline" className="shrink-0 text-[10px] capitalize">
+            {depKind}
+          </Badge>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t border-zinc-100 px-3 pb-3 pt-2">
+            {directoryResolution?.loading && (
+              <p className="flex items-center gap-2 text-xs text-zinc-500">
+                <Loader2 className="h-3 w-3 animate-spin" /> Loading from DevOps…
+              </p>
+            )}
+            {missing && !directoryResolution?.loading && (
+              <p className="text-xs text-amber-700">Not found in dependencies backup</p>
+            )}
+            <div className="mt-2 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!doc}
+                onClick={() =>
+                  onView({
+                    category: "directory_dependency",
+                    depKind,
+                    objectId,
+                    doc,
+                    name: lines.primary,
+                  })
+                }
+                className="gap-1 text-xs"
+              >
+                <Eye className="w-3 h-3" />
+                View JSON
+              </Button>
             </div>
           </div>
         </CollapsibleContent>
@@ -242,7 +482,8 @@ const PolicyCard = ({ item, category, onView, onSelect, isSelected, onDeploy, on
 
 // Category Column Component
 const CategoryColumn = ({ 
-  title, 
+  title,
+  subtitle,
   icon: Icon, 
   items, 
   category, 
@@ -253,23 +494,84 @@ const CategoryColumn = ({
   onSelectAll,
   onDeploy,
   onDelete,
-  deployingId
+  deployingId,
+  diffLabels,
+  hideTenantActions = false,
+  groupByKind = true,
+  comparisonPolicyType = "all",
+  directoryResolution,
 }) => {
   const allSelected = items.length > 0 && selectedItems.length === items.length;
   const someSelected = selectedItems.length > 0 && selectedItems.length < items.length;
-  
+
+  const { sections: folderSections } = buildFolderSectionsWithDependencies(
+    items,
+    category,
+    comparisonPolicyType,
+    directoryResolution
+  );
+
+  const renderPolicyCard = (item, idx) => (
+    <PolicyCard
+      key={getPolicyItemId(item, category) || idx}
+      item={item}
+      category={category}
+      onView={onViewPolicy}
+      onSelect={onSelectItem}
+      isSelected={selectedItems.some(
+        (s) =>
+          s.name === item.name ||
+          s.policy?.id === item.policy?.id ||
+          getPolicyItemId(s, category) === getPolicyItemId(item, category)
+      )}
+      onDeploy={onDeploy}
+      onDelete={onDelete}
+      isDeploying={
+        deployingId ===
+        (getPolicyItemId(item, category) || getPolicyDisplayName(item, category))
+      }
+      diffLabels={diffLabels}
+    />
+  );
+
+  const renderSectionBody = (section) => {
+    if (section.dependencyIds) {
+      const byId =
+        section.dependencyKind === "user"
+          ? directoryResolution?.userById || {}
+          : directoryResolution?.groupById || {};
+      return section.dependencyIds.map((objectId) => (
+        <DependencyDirectoryCard
+          key={directoryDepKey(section.dependencyKind, objectId)}
+          objectId={objectId}
+          depKind={section.dependencyKind}
+          doc={byId[objectId]}
+          category={category}
+          onView={onViewPolicy}
+          directoryResolution={directoryResolution}
+        />
+      ));
+    }
+    return section.items.map((item, idx) => renderPolicyCard(item, idx));
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className={`flex items-center gap-2 p-3 border-b ${color.border} ${color.bg}`}>
         <Icon className={`w-4 h-4 ${color.icon}`} strokeWidth={1.5} />
-        <h3 className={`text-sm font-semibold ${color.text}`}>{title}</h3>
-        <Badge variant="secondary" className="ml-auto">
+        <div className="min-w-0 flex-1">
+          <h3 className={`text-sm font-semibold ${color.text}`}>{title}</h3>
+          {subtitle && (
+            <p className="text-[10px] text-zinc-500 break-words leading-snug">{subtitle}</p>
+          )}
+        </div>
+        <Badge variant="secondary" className="ml-auto shrink-0">
           {items.length}
         </Badge>
       </div>
       
       {/* Bulk actions for tenant_only and baseline_only */}
-      {(category === "tenant_only" || category === "baseline_only") && items.length > 0 && (
+      {!hideTenantActions && (category === "tenant_only" || category === "baseline_only") && items.length > 0 && (
         <div className="p-2 border-b border-zinc-100 bg-zinc-50/50 flex items-center gap-2">
           <button
             onClick={() => onSelectAll(category)}
@@ -319,22 +621,57 @@ const CategoryColumn = ({
       
       <ScrollArea className="flex-1 p-2">
         {items.length > 0 ? (
-          items.map((item, idx) => (
-            <PolicyCard 
-              key={idx} 
-              item={item} 
-              category={category}
-              onView={onViewPolicy}
-              onSelect={onSelectItem}
-              isSelected={selectedItems.some(s => 
-                (s.name === item.name) || 
-                (s.policy?.id === item.policy?.id)
-              )}
-              onDeploy={onDeploy}
-              onDelete={onDelete}
-              isDeploying={deployingId === (item.name || item.policy?.id)}
-            />
-          ))
+          groupByKind && folderSections.length > 0 ? (
+            <div className="space-y-2">
+              {folderSections.map((section) => {
+                const count = section.dependencyIds?.length ?? section.items?.length ?? 0;
+                return (
+                  <Collapsible
+                    key={section.id}
+                    defaultOpen={
+                      section.dependencyIds
+                        ? false
+                        : section.id === "conditional_access" || comparisonPolicyType !== "all"
+                    }
+                    className="group rounded-md border border-zinc-200/80 bg-white"
+                  >
+                    <CollapsibleTrigger className="flex w-full items-center gap-2 px-2 py-2 text-left hover:bg-zinc-50">
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform duration-200 group-data-[state=open]:rotate-90" />
+                      <Folder
+                        className={`h-4 w-4 shrink-0 ${
+                          section.dependencyIds ? "text-violet-600/90" : "text-amber-600/90"
+                        }`}
+                        strokeWidth={1.5}
+                      />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="min-w-0 flex-1 text-left text-xs font-medium leading-snug text-zinc-800 break-words">
+                            {section.shortLabel || getFolderSectionShortLabel(section.id) || section.label}
+                          </span>
+                        </TooltipTrigger>
+                        {section.label && section.label !== (section.shortLabel || section.id) && (
+                          <TooltipContent
+                            side="right"
+                            className="max-w-xs bg-zinc-900 text-zinc-50 text-xs leading-relaxed"
+                          >
+                            {section.label}
+                          </TooltipContent>
+                        )}
+                      </Tooltip>
+                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                        {count}
+                      </Badge>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="space-y-1 px-1 pb-2 pt-1">
+                      {renderSectionBody(section)}
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
+            </div>
+          ) : (
+            items.map((item, idx) => renderPolicyCard(item, idx))
+          )
         ) : (
           <div className="flex flex-col items-center justify-center h-32 text-zinc-400">
             <Icon className="w-8 h-8 mb-2 opacity-30" />
@@ -350,6 +687,36 @@ const CISComparison = () => {
   const [loading, setLoading] = useState(false);
   const [comparison, setComparison] = useState(null);
   const [policyType, setPolicyType] = useState("all");
+  const [compareMode, setCompareMode] = useState("cis");
+  const [tenantSnapshotId, setTenantSnapshotId] = useState("latest");
+  const [tenantReferenceSnapshotId, setTenantReferenceSnapshotId] = useState("");
+  const [baselineSnapshotId, setBaselineSnapshotId] = useState("latest");
+  const [comparisonSources, setComparisonSources] = useState({
+    tenant_snapshots: [
+      {
+        id: "latest",
+        label: "Tenant · latest (default)",
+      },
+    ],
+    baseline_options: [
+      {
+        id: "latest",
+        label: "CIS baseline · latest (default)",
+      },
+    ],
+    policy_inventory: {},
+    baseline_inventory: {},
+    loading: false,
+  });
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [policyFilter, setPolicyFilter] = useState("all");
+  const [directoryResolution, setDirectoryResolution] = useState({
+    userById: {},
+    groupById: {},
+    loading: false,
+    error: null,
+  });
+  const [devopsConfigured, setDevopsConfigured] = useState(false);
   const [selectedPolicy, setSelectedPolicy] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [githubConfigured, setGithubConfigured] = useState(false);
@@ -364,36 +731,274 @@ const CISComparison = () => {
   const [selectedBaselineOnly, setSelectedBaselineOnly] = useState([]);
   
   const navigate = useNavigate();
+  const { begin: beginRequest, abort: abortRequest } = useCancellableRequests();
 
   useEffect(() => {
     checkConfiguration();
   }, []);
 
-  const checkConfiguration = async () => {
+  const fetchComparisonSources = async (
+    commitId,
+    {
+      includeInventory = false,
+      includeBaselineSnapshots = true,
+    } = {}
+  ) => {
+    const signal = beginRequest("comparison-sources");
     try {
-      setCheckingConfig(true);
-      const response = await axios.get(`${API}/settings`);
-      setGithubConfigured(response.data.github_configured);
+      setSourcesLoading(true);
+      const params = {
+        include_inventory: includeInventory,
+        include_baseline_snapshots: includeBaselineSnapshots,
+      };
+      if (commitId && commitId !== "latest") {
+        params.tenant_commit_id = commitId;
+      }
+      const response = await axios.get(`${API}/baseline/comparison-sources`, {
+        params,
+        signal,
+      });
+      setComparisonSources((prev) => ({
+        tenant_snapshots: response.data.tenant_snapshots?.length
+          ? response.data.tenant_snapshots
+          : prev.tenant_snapshots?.length
+            ? prev.tenant_snapshots
+            : [{ id: "latest", label: "Tenant · latest" }],
+        baseline_options: response.data.baseline_options?.length
+          ? response.data.baseline_options
+          : prev.baseline_options?.length
+            ? prev.baseline_options
+            : [{ id: "latest", label: "CIS baseline · latest" }],
+        policy_inventory: includeInventory
+          ? response.data.policy_inventory || {}
+          : prev.policy_inventory || {},
+        baseline_inventory: includeInventory
+          ? response.data.baseline_inventory || {}
+          : prev.baseline_inventory || {},
+        loading: false,
+      }));
     } catch (err) {
-      console.error("Failed to check configuration", err);
+      if (isRequestAborted(err)) return;
+      console.error("Failed to load comparison sources", err);
+      toast.error("Failed to load snapshot list from DevOps/GitHub");
     } finally {
-      setCheckingConfig(false);
+      if (!signal.aborted) {
+        setSourcesLoading(false);
+      }
     }
   };
 
+  useEffect(() => {
+    if (compareMode !== "tenant" || !devopsConfigured) return;
+    const onlyDefault = comparisonSources.tenant_snapshots.length <= 1;
+    if (onlyDefault && !sourcesLoading) {
+      fetchComparisonSources(undefined, {
+        includeInventory: false,
+        includeBaselineSnapshots: false,
+      });
+    }
+  }, [compareMode, devopsConfigured]);
+
+  useEffect(() => {
+    if (compareMode !== "tenant" || comparisonSources.tenant_snapshots.length < 2) return;
+    if (tenantReferenceSnapshotId) return;
+    const firstPast = comparisonSources.tenant_snapshots.find((s) => s.id !== "latest");
+    if (firstPast) setTenantReferenceSnapshotId(firstPast.id);
+  }, [compareMode, comparisonSources.tenant_snapshots, tenantReferenceSnapshotId]);
+
+  const selectedTenantSnapshot = comparisonSources.tenant_snapshots.find(
+    (s) => s.id === tenantSnapshotId
+  );
+  const isHistoricalTenant =
+    compareMode === "cis" && tenantSnapshotId && tenantSnapshotId !== "latest";
+  const isTenantHistoryMode = compareMode === "tenant";
+
+  const columnLabels = comparison?.column_labels || null;
+  const diffLabels = columnLabels
+    ? { current: columnLabels.diff_current, previous: columnLabels.diff_previous }
+    : { current: "Tenant", previous: "Baseline" };
+  const hideTenantActions =
+    isHistoricalTenant ||
+    (isTenantHistoryMode && tenantSnapshotId !== "latest");
+  const col = (key, fallbackTitle, fallbackHint) => ({
+    title: columnLabels?.[key]?.title ?? fallbackTitle,
+    subtitle: columnLabels?.[key]?.subtitle,
+    hint: columnLabels?.[key]?.hint ?? fallbackHint,
+  });
+
+  const checkConfiguration = async () => {
+    const signal = beginRequest("settings");
+    try {
+      setCheckingConfig(true);
+      const response = await axios.get(`${API}/settings`, { signal });
+      setGithubConfigured(response.data.github_configured);
+      setDevopsConfigured(!!response.data.devops_configured);
+    } catch (err) {
+      if (isRequestAborted(err)) return;
+      console.error("Failed to check configuration", err);
+    } finally {
+      if (!signal.aborted) {
+        setCheckingConfig(false);
+      }
+    }
+  };
+
+  const focusedPolicyId = useMemo(() => {
+    if (!policyFilter.includes(":")) return null;
+    return policyFilter.split(":").slice(1).join(":");
+  }, [policyFilter]);
+
+  const displayComparison = useMemo(() => {
+    if (!comparison) return null;
+    return filterComparisonByPolicyId(comparison, focusedPolicyId);
+  }, [comparison, focusedPolicyId]);
+
+  useEffect(() => {
+    const refs = comparison?.directory_refs;
+    if (!refs) return;
+    const userIds = refs.user_ids || [];
+    const groupIds = refs.group_ids || [];
+    if (!userIds.length && !groupIds.length) {
+      setDirectoryResolution({
+        userById: {},
+        groupById: {},
+        loading: false,
+        error: null,
+      });
+      return;
+    }
+    const signal = beginRequest("dependencies");
+    (async () => {
+      setDirectoryResolution((prev) => ({ ...prev, loading: true, error: null }));
+      try {
+        const commit =
+          tenantSnapshotId && tenantSnapshotId !== "latest"
+            ? tenantSnapshotId
+            : undefined;
+        const res = await axios.post(
+          `${API}/devops/dependencies/read`,
+          {
+            user_ids: userIds,
+            group_ids: groupIds,
+            tenant_commit_id: commit,
+          },
+          { signal }
+        );
+        if (signal.aborted) return;
+        setDirectoryResolution({
+          userById: res.data.user_by_id || {},
+          groupById: res.data.group_by_id || {},
+          loading: false,
+          error: null,
+        });
+      } catch (err) {
+        if (isRequestAborted(err)) return;
+        setDirectoryResolution({
+          userById: {},
+          groupById: {},
+          loading: false,
+          error: err.response?.data?.detail || "Failed to load dependencies",
+        });
+      }
+    })();
+    return () => abortRequest("dependencies");
+  }, [comparison, tenantSnapshotId, beginRequest, abortRequest]);
+
+  const handlePolicyFilterChange = (value) => {
+    setPolicyFilter(value);
+    if (value === "all") {
+      setPolicyType("all");
+    } else if (value.includes(":")) {
+      const [kind] = value.split(":");
+      setPolicyType(kind);
+    } else {
+      setPolicyType(value);
+    }
+  };
+
+  const deployDevOpsCommitId = () => {
+    if (compareMode === "tenant" && tenantReferenceSnapshotId && tenantReferenceSnapshotId !== "latest") {
+      return tenantReferenceSnapshotId;
+    }
+    if (tenantSnapshotId && tenantSnapshotId !== "latest") {
+      return tenantSnapshotId;
+    }
+    return undefined;
+  };
+
   const runComparison = async () => {
+    const signal = beginRequest("compare");
     try {
       setLoading(true);
       setSelectedTenantOnly([]);
       setSelectedBaselineOnly([]);
-      const response = await axios.post(`${API}/baseline/compare?policy_type=${policyType}`);
+      setDirectoryResolution({
+        userById: {},
+        groupById: {},
+        loading: false,
+        error: null,
+      });
+      const params = new URLSearchParams({
+        policy_type: policyType,
+        compare_mode: compareMode,
+      });
+      if (compareMode === "cis" && !githubConfigured) {
+        toast.error("Configure GitHub baseline in Settings for CIS comparison");
+        setLoading(false);
+        return;
+      }
+      if (compareMode === "tenant") {
+        if (!tenantReferenceSnapshotId) {
+          toast.error("Select a previous tenant snapshot to compare against");
+          setLoading(false);
+          return;
+        }
+        if (tenantSnapshotId && tenantSnapshotId !== "latest") {
+          params.set("tenant_commit_id", tenantSnapshotId);
+        }
+        params.set("tenant_reference_commit_id", tenantReferenceSnapshotId);
+      } else {
+        if (tenantSnapshotId && tenantSnapshotId !== "latest") {
+          params.set("tenant_commit_id", tenantSnapshotId);
+        }
+        if (baselineSnapshotId && baselineSnapshotId !== "latest") {
+          const opt = comparisonSources.baseline_options.find(
+            (b) => b.id === baselineSnapshotId
+          );
+          params.set("baseline_ref", opt?.ref || baselineSnapshotId);
+        }
+      }
+      const response = await axios.post(
+        `${API}/baseline/compare?${params.toString()}`,
+        null,
+        { signal }
+      );
+      if (signal.aborted) return;
       setComparison(response.data);
       toast.success("Comparison completed successfully");
+      fetchComparisonSources(tenantSnapshotId, {
+        includeInventory: true,
+        includeBaselineSnapshots: compareMode === "cis",
+      });
     } catch (err) {
+      if (isRequestAborted(err)) return;
       const errorMsg = err.response?.data?.detail || "Failed to run comparison";
       toast.error(errorMsg);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleSnapshotDropdownOpen = (open) => {
+    if (!open || sourcesLoading) return;
+    const needsSnapshots = comparisonSources.tenant_snapshots.length <= 1;
+    if (devopsConfigured && needsSnapshots) {
+      fetchComparisonSources(tenantSnapshotId, {
+        includeInventory: false,
+        includeBaselineSnapshots: compareMode === "cis",
+      });
     }
   };
 
@@ -432,16 +1037,16 @@ const CISComparison = () => {
 
   const handleSelectAll = (category) => {
     if (category === "tenant_only") {
-      if (selectedTenantOnly.length === comparison?.tenant_only?.length) {
+      if (selectedTenantOnly.length === displayComparison?.tenant_only?.length) {
         setSelectedTenantOnly([]);
       } else {
-        setSelectedTenantOnly([...comparison.tenant_only]);
+        setSelectedTenantOnly([...(displayComparison?.tenant_only || [])]);
       }
     } else if (category === "baseline_only") {
-      if (selectedBaselineOnly.length === comparison?.baseline_only?.length) {
+      if (selectedBaselineOnly.length === displayComparison?.baseline_only?.length) {
         setSelectedBaselineOnly([]);
       } else {
-        setSelectedBaselineOnly([...comparison.baseline_only]);
+        setSelectedBaselineOnly([...(displayComparison?.baseline_only || [])]);
       }
     }
   };
@@ -450,151 +1055,68 @@ const CISComparison = () => {
   const handleDeploy = (item, isBulk = false) => {
     if (isBulk) {
       setPendingAction({ type: "deploy_bulk", items: selectedBaselineOnly });
+    } else if (item?.baseline && item?.tenant) {
+      setPendingAction({ type: "deploy_conflicting", item });
     } else {
       setPendingAction({ type: "deploy_single", item });
     }
     setDeployDialogOpen(true);
   };
 
-  const confirmDeploy = async () => {
+  const goToDashboardWithPending = (pendingOperations) => {
+    if (!pendingOperations?.length) return;
+    navigate("/dashboard", { state: { pendingOperations } });
+  };
+
+  const confirmDeploy = () => {
     setDeployDialogOpen(false);
-    
-    try {
-      if (pendingAction.type === "deploy_single") {
-        const item = pendingAction.item;
-        setDeployingId(item.name);
-        
-        // Determine policy type from the policy structure
-        const policy = item.policy;
-        let detectedType = policyType;
-        if (policyType === "all") {
-          // Try to detect type from @odata.type or other indicators
-          if (policy["@odata.type"]?.includes("conditionalAccess")) {
-            detectedType = "conditional_access";
-          } else if (policy["@odata.type"]?.includes("deviceConfiguration")) {
-            detectedType = "device_configuration";
-          } else if (policy["@odata.type"]?.includes("compliance")) {
-            detectedType = "compliance";
-          } else {
-            detectedType = "configuration";
-          }
-        }
-        
-        const response = await axios.post(`${API}/deploy/policy`, {
-          policy: policy,
-          policy_type: detectedType
-        });
-        
-        if (response.data.success) {
-          toast.success(response.data.message);
-          runComparison(); // Refresh comparison
-        } else {
-          toast.error(response.data.message);
-        }
-      } else if (pendingAction.type === "deploy_bulk") {
-        const items = pendingAction.items;
-        setDeployingId("bulk");
-        
-        let detectedType = policyType;
-        if (policyType === "all") {
-          detectedType = "configuration"; // Default for bulk
-        }
-        
-        const response = await axios.post(`${API}/deploy/bulk`, {
-          policies: items.map(i => i.policy),
-          policy_type: detectedType
-        });
-        
-        toast.success(response.data.message);
-        setSelectedBaselineOnly([]);
-        runComparison();
-      }
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Failed to deploy";
-      toast.error(errorMsg);
-    } finally {
-      setDeployingId(null);
+    const pendingOperations = buildPendingOperationsFromDeployAction(
+      pendingAction,
+      policyType,
+      deployDevOpsCommitId()
+    );
+    if (!pendingOperations.length) {
+      toast.error("Nothing to deploy");
       setPendingAction(null);
+      return;
     }
+    if (pendingAction?.type === "deploy_bulk") {
+      setSelectedBaselineOnly([]);
+    }
+    setDeployingId(null);
+    setPendingAction(null);
+    goToDashboardWithPending(pendingOperations);
   };
 
   // Delete handler
   const handleDelete = (item, isBulk = false) => {
     if (isBulk) {
       setPendingAction({ type: "delete_bulk", items: selectedTenantOnly });
+    } else if (item?.tenant?.id && item?.baseline && !item?.policy) {
+      setPendingAction({ type: "delete_matching", item });
     } else {
       setPendingAction({ type: "delete_single", item });
     }
     setDeleteDialogOpen(true);
   };
 
-  const confirmDelete = async () => {
+  const confirmDelete = () => {
     setDeleteDialogOpen(false);
-    
-    try {
-      if (pendingAction.type === "delete_single") {
-        const item = pendingAction.item;
-        const policyId = item.policy?.id;
-        
-        if (!policyId) {
-          toast.error("Policy ID not found");
-          return;
-        }
-        
-        setDeployingId(item.name);
-        
-        let detectedType = policyType;
-        if (policyType === "all") {
-          const policy = item.policy;
-          if (policy["@odata.type"]?.includes("conditionalAccess")) {
-            detectedType = "conditional_access";
-          } else if (policy["@odata.type"]?.includes("deviceConfiguration")) {
-            detectedType = "device_configuration";
-          } else if (policy["@odata.type"]?.includes("compliance")) {
-            detectedType = "compliance";
-          } else {
-            detectedType = "configuration";
-          }
-        }
-        
-        const response = await axios.delete(`${API}/deploy/policy`, {
-          data: {
-            policy_id: policyId,
-            policy_type: detectedType
-          }
-        });
-        
-        if (response.data.success) {
-          toast.success("Policy removed from tenant");
-          runComparison();
-        } else {
-          toast.error(response.data.message);
-        }
-      } else if (pendingAction.type === "delete_bulk") {
-        const items = pendingAction.items;
-        setDeployingId("bulk");
-        
-        let detectedType = policyType;
-        if (policyType === "all") {
-          detectedType = "configuration";
-        }
-        
-        const response = await axios.post(`${API}/deploy/bulk-delete`, {
-          policy_ids: items.map(i => i.policy?.id).filter(Boolean),
-          policy_type: detectedType
-        });
-        
-        toast.success(response.data.message);
-        setSelectedTenantOnly([]);
-        runComparison();
-      }
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Failed to delete";
-      toast.error(errorMsg);
-    } finally {
-      setDeployingId(null);
+    const pendingOperations = buildPendingOperationsFromDeleteAction(
+      pendingAction,
+      policyType
+    );
+    if (!pendingOperations.length) {
+      toast.error("Policy ID not found");
       setPendingAction(null);
+      return;
     }
+    if (pendingAction?.type === "delete_bulk") {
+      setSelectedTenantOnly([]);
+    }
+    setDeployingId(null);
+    setPendingAction(null);
+    goToDashboardWithPending(pendingOperations);
   };
 
   if (checkingConfig) {
@@ -606,7 +1128,7 @@ const CISComparison = () => {
     );
   }
 
-  if (!githubConfigured) {
+  if (false && githubConfigured) {
     return (
       <div data-testid="cis-not-configured" className="space-y-6">
         <div>
@@ -639,29 +1161,85 @@ const CISComparison = () => {
     );
   }
 
+  if (!devopsConfigured) {
+    return (
+      <div data-testid="cis-devops-not-configured" className="space-y-6">
+        <h1 className="font-heading text-2xl font-semibold text-zinc-900">CIS Baseline Comparison</h1>
+        <div className="card-base p-8 text-center">
+          <Cloud className="w-16 h-16 mx-auto text-zinc-300 mb-4" />
+          <p className="text-sm text-zinc-500 mb-4">
+            Configure Azure DevOps in Settings to load tenant policy snapshots.
+          </p>
+          <Button onClick={() => navigate("/settings")}>Configure Azure DevOps</Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
+    <TooltipProvider delayDuration={300}>
     <div data-testid="cis-comparison-page" className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="space-y-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="font-heading text-2xl font-semibold text-zinc-900 tracking-tight">
             CIS Baseline Comparison
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
-            Compare, deploy, and remove policies
+            Tenant vs previous commit loads commit history automatically. Open a snapshot
+            dropdown in CIS mode to refresh commits. Policy filter options load after the first run.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Select value={policyType} onValueChange={setPolicyType}>
-            <SelectTrigger className="w-[200px]" data-testid="policy-type-select">
-              <SelectValue placeholder="Select policy type" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={compareMode} onValueChange={setCompareMode}>
+            <SelectTrigger className="w-[200px]" data-testid="compare-mode-select">
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Policies</SelectItem>
-              <SelectItem value="device_configuration">Device Configuration</SelectItem>
-              <SelectItem value="configuration">Configuration (Settings Catalog)</SelectItem>
-              <SelectItem value="conditional_access">Conditional Access</SelectItem>
-              <SelectItem value="compliance">Compliance</SelectItem>
+              <SelectItem value="cis">Tenant vs CIS baseline</SelectItem>
+              <SelectItem value="tenant">Tenant vs previous commit</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={policyFilter} onValueChange={handlePolicyFilterChange}>
+            <SelectTrigger className="w-[260px]" data-testid="policy-type-select">
+              <SelectValue placeholder="Policy filter" />
+            </SelectTrigger>
+            <SelectContent className="max-h-[360px]">
+              <SelectItem value="all">All policies</SelectItem>
+              {POLICY_KIND_ORDER.map((kind) => {
+                const tenantRows = comparisonSources.policy_inventory?.[kind] || [];
+                const baselineRows =
+                  comparisonSources.baseline_inventory?.[kind] || [];
+                if (!tenantRows.length && !baselineRows.length) return null;
+                const groupLabel = policyKindLabel(kind, comparisonSources);
+                const filterLabel =
+                  POLICY_KIND_FILTER_LABELS[kind] || groupLabel;
+                return (
+                  <SelectGroup key={kind}>
+                    <SelectLabel>{filterLabel}</SelectLabel>
+                    <SelectItem value={kind}>
+                      All {filterLabel}
+                    </SelectItem>
+                    {tenantRows.map((row) => (
+                      <SelectItem
+                        key={`tenant:${kind}:${row.id}`}
+                        value={`${kind}:${row.id}`}
+                      >
+                        Tenant · {row.label}
+                      </SelectItem>
+                    ))}
+                    {baselineRows.map((row) => (
+                      <SelectItem
+                        key={`baseline:${kind}:${row.id}`}
+                        value={`${kind}:${row.id}`}
+                      >
+                        CIS · {row.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                );
+              })}
             </SelectContent>
           </Select>
           <Button
@@ -679,41 +1257,170 @@ const CISComparison = () => {
           </Button>
         </div>
       </div>
+        {compareMode === "cis" ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="label-text flex items-center gap-1.5">
+                <Cloud className="w-3.5 h-3.5" /> Tenant snapshot (Azure DevOps)
+              </label>
+              <Select
+                value={tenantSnapshotId}
+                onValueChange={setTenantSnapshotId}
+                onOpenChange={handleSnapshotDropdownOpen}
+                disabled={sourcesLoading}
+              >
+                <SelectTrigger className="w-full" data-testid="tenant-snapshot-select">
+                  <SelectValue placeholder="Tenant version" />
+                  {sourcesLoading && <Loader2 className="ml-2 h-3 w-3 animate-spin" />}
+                </SelectTrigger>
+                <SelectContent className="max-h-[320px]">
+                  {comparisonSources.tenant_snapshots.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="label-text flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5" /> CIS baseline (GitHub)
+              </label>
+              <Select
+                value={baselineSnapshotId}
+                onValueChange={setBaselineSnapshotId}
+                onOpenChange={handleSnapshotDropdownOpen}
+                disabled={sourcesLoading || !githubConfigured}
+              >
+                <SelectTrigger className="w-full" data-testid="baseline-snapshot-select">
+                  <SelectValue placeholder="Baseline version" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[320px]">
+                  {comparisonSources.baseline_options.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="label-text flex items-center gap-1.5">
+                <Cloud className="w-3.5 h-3.5" /> Current tenant (Azure DevOps)
+              </label>
+              <Select
+                value={tenantSnapshotId}
+                onValueChange={setTenantSnapshotId}
+                onOpenChange={handleSnapshotDropdownOpen}
+                disabled={sourcesLoading}
+              >
+                <SelectTrigger className="w-full" data-testid="tenant-current-select">
+                  <SelectValue placeholder="Current snapshot" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[320px]">
+                  {comparisonSources.tenant_snapshots.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="label-text flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5" /> Previous commit
+              </label>
+              <Select
+                value={tenantReferenceSnapshotId}
+                onValueChange={setTenantReferenceSnapshotId}
+                onOpenChange={handleSnapshotDropdownOpen}
+                disabled={sourcesLoading}
+              >
+                <SelectTrigger className="w-full" data-testid="tenant-reference-select">
+                  <SelectValue placeholder="Older snapshot" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[320px]">
+                  {comparisonSources.tenant_snapshots
+                    .filter((s) => s.id !== tenantSnapshotId)
+                    .map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {compareMode === "cis" && !githubConfigured && (
+        <Alert className="border-amber-200 bg-amber-50">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            Configure GitHub in Settings for CIS baseline comparison, or switch to Tenant vs previous commit.
+          </AlertDescription>
+        </Alert>
+      )}
+      {isTenantHistoryMode && (
+        <Alert className="border-violet-200 bg-violet-50">
+          <History className="h-4 w-4" />
+          <AlertDescription>
+            Only in current = added since the older backup. Only in previous = removed since then. Deploy restores policies to the live tenant.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {isHistoricalTenant && (
+        <Alert className="border-blue-200 bg-blue-50 text-blue-950">
+          <History className="h-4 w-4 text-blue-600" />
+          <AlertTitle>Historical tenant snapshot</AlertTitle>
+          <AlertDescription>
+            Remove/deploy actions apply to the live tenant. Use Tenant · latest to change production.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {directoryResolution.error && comparison && (
+        <Alert className="border-amber-200 bg-amber-50">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            Could not load user/group dependencies from DevOps: {directoryResolution.error}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Summary Stats */}
-      {comparison && (
+      {displayComparison && (
         <div className="grid grid-cols-4 gap-4">
           <div className="stat-card border-l-4 border-l-blue-500">
-            <p className="label-text">Tenant Only</p>
-            <p className="stat-value text-blue-600">{comparison.summary.tenant_only_count}</p>
-            <p className="text-xs text-zinc-500 mt-1">Can be removed</p>
+            <p className="label-text">{col("tenant_only", "Tenant Only", "Can be removed").title}</p>
+            <p className="stat-value text-blue-600">{displayComparison.summary.tenant_only_count}</p>
+            <p className="text-xs text-zinc-500 mt-1">{col("tenant_only", "Tenant Only", "Can be removed").hint}</p>
           </div>
           <div className="stat-card border-l-4 border-l-amber-500">
-            <p className="label-text">Baseline Only</p>
-            <p className="stat-value text-amber-600">{comparison.summary.baseline_only_count}</p>
-            <p className="text-xs text-zinc-500 mt-1">Can be deployed</p>
+            <p className="label-text">{col("baseline_only", "Baseline Only", "Can be deployed").title}</p>
+            <p className="stat-value text-amber-600">{displayComparison.summary.baseline_only_count}</p>
+            <p className="text-xs text-zinc-500 mt-1">{col("baseline_only", "Baseline Only", "Can be deployed").hint}</p>
           </div>
           <div className="stat-card border-l-4 border-l-red-500">
-            <p className="label-text">Conflicting</p>
-            <p className="stat-value text-red-600">{comparison.summary.conflicting_count}</p>
-            <p className="text-xs text-zinc-500 mt-1">Different settings</p>
+            <p className="label-text">{col("conflicting", "Conflicting", "Different settings").title}</p>
+            <p className="stat-value text-red-600">{displayComparison.summary.conflicting_count}</p>
+            <p className="text-xs text-zinc-500 mt-1">{col("conflicting", "Conflicting", "Different settings").hint}</p>
           </div>
           <div className="stat-card border-l-4 border-l-emerald-500">
-            <p className="label-text">Matching</p>
-            <p className="stat-value text-emerald-600">{comparison.summary.matching_count}</p>
-            <p className="text-xs text-zinc-500 mt-1">In sync</p>
+            <p className="label-text">{col("matching", "Matching", "In sync").title}</p>
+            <p className="stat-value text-emerald-600">{displayComparison.summary.matching_count}</p>
+            <p className="text-xs text-zinc-500 mt-1">{col("matching", "Matching", "In sync").hint}</p>
           </div>
         </div>
       )}
 
       {/* Comparison Grid */}
-      {comparison ? (
-        <div className="grid grid-cols-4 gap-4 h-[calc(100vh-380px)]">
-          <div className="card-base overflow-hidden flex flex-col">
+      {displayComparison ? (
+        <div className="overflow-x-auto pb-2">
+        <div className="grid h-[calc(100vh-380px)] min-w-[1280px] grid-cols-4 gap-4">
+          <div className="card-base flex min-w-[300px] flex-col overflow-hidden">
             <CategoryColumn
-              title="Tenant Only"
+              title={col("tenant_only", "Tenant Only", "Can be removed").title}
+              subtitle={col("tenant_only", "Tenant Only", "Can be removed").subtitle}
               icon={Plus}
-              items={comparison.tenant_only}
+              items={displayComparison.tenant_only}
               category="tenant_only"
               color={{
                 bg: "bg-blue-50",
@@ -728,14 +1435,20 @@ const CISComparison = () => {
               onDeploy={handleDeploy}
               onDelete={handleDelete}
               deployingId={deployingId}
+              diffLabels={diffLabels}
+              hideTenantActions={hideTenantActions}
+              groupByKind
+              comparisonPolicyType={policyType}
+              directoryResolution={directoryResolution}
             />
           </div>
-          
-          <div className="card-base overflow-hidden flex flex-col">
+
+          <div className="card-base flex min-w-[300px] flex-col overflow-hidden">
             <CategoryColumn
-              title="Baseline Only"
+              title={col("baseline_only", "Baseline Only", "Can be deployed").title}
+              subtitle={col("baseline_only", "Baseline Only", "Can be deployed").subtitle}
               icon={FileText}
-              items={comparison.baseline_only}
+              items={displayComparison.baseline_only}
               category="baseline_only"
               color={{
                 bg: "bg-amber-50",
@@ -750,14 +1463,20 @@ const CISComparison = () => {
               onDeploy={handleDeploy}
               onDelete={handleDelete}
               deployingId={deployingId}
+              diffLabels={diffLabels}
+              hideTenantActions={hideTenantActions}
+              groupByKind
+              comparisonPolicyType={policyType}
+              directoryResolution={directoryResolution}
             />
           </div>
-          
-          <div className="card-base overflow-hidden flex flex-col">
+
+          <div className="card-base flex min-w-[300px] flex-col overflow-hidden">
             <CategoryColumn
-              title="Conflicting"
+              title={col("conflicting", "Conflicting", "Different settings").title}
+              subtitle={col("conflicting", "Conflicting", "Different settings").subtitle}
               icon={AlertTriangle}
-              items={comparison.conflicting}
+              items={displayComparison.conflicting}
               category="conflicting"
               color={{
                 bg: "bg-red-50",
@@ -769,17 +1488,23 @@ const CISComparison = () => {
               selectedItems={[]}
               onSelectItem={() => {}}
               onSelectAll={() => {}}
-              onDeploy={() => {}}
-              onDelete={() => {}}
+              onDeploy={handleDeploy}
+              onDelete={handleDelete}
               deployingId={deployingId}
+              diffLabels={diffLabels}
+              hideTenantActions
+              groupByKind
+              comparisonPolicyType={policyType}
+              directoryResolution={directoryResolution}
             />
           </div>
-          
-          <div className="card-base overflow-hidden flex flex-col">
+
+          <div className="card-base flex min-w-[300px] flex-col overflow-hidden">
             <CategoryColumn
-              title="Matching"
+              title={col("matching", "Matching", "In sync").title}
+              subtitle={col("matching", "Matching", "In sync").subtitle}
               icon={CheckCircle2}
-              items={comparison.matching}
+              items={displayComparison.matching}
               category="matching"
               color={{
                 bg: "bg-emerald-50",
@@ -791,11 +1516,17 @@ const CISComparison = () => {
               selectedItems={[]}
               onSelectItem={() => {}}
               onSelectAll={() => {}}
-              onDeploy={() => {}}
-              onDelete={() => {}}
+              onDeploy={handleDeploy}
+              onDelete={handleDelete}
               deployingId={deployingId}
+              diffLabels={diffLabels}
+              hideTenantActions
+              groupByKind
+              comparisonPolicyType={policyType}
+              directoryResolution={directoryResolution}
             />
           </div>
+        </div>
         </div>
       ) : (
         <div className="card-base p-12 text-center">
@@ -804,8 +1535,7 @@ const CISComparison = () => {
             Ready to Compare
           </h2>
           <p className="text-sm text-zinc-500 mb-4 max-w-md mx-auto">
-            Select a policy type and click "Run Comparison" to compare your tenant 
-            policies with the CIS baseline stored in your GitHub repository.
+            Choose Tenant vs CIS baseline or Tenant vs previous commit, pick snapshots, then run comparison.
           </p>
         </div>
       )}
@@ -815,8 +1545,12 @@ const CISComparison = () => {
         <SheetContent className="w-full sm:max-w-2xl">
           <SheetHeader className="border-b border-zinc-200 pb-4">
             <div className="flex items-center justify-between">
-              <SheetTitle className="font-heading truncate max-w-[400px]">
-                {selectedPolicy?.name}
+              <SheetTitle className="font-heading break-words pr-8 text-left leading-snug">
+                {selectedPolicy
+                  ? selectedPolicy.category === "directory_dependency"
+                    ? selectedPolicy.name
+                    : getPolicyDisplayName(selectedPolicy, selectedPolicy.category)
+                  : ""}
               </SheetTitle>
               <Badge
                 variant="outline"
@@ -839,7 +1573,7 @@ const CISComparison = () => {
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <p className="label-text">Tenant Policy</p>
+                      <p className="label-text">{diffLabels.current} Policy</p>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -856,7 +1590,7 @@ const CISComparison = () => {
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <p className="label-text">Baseline Policy</p>
+                      <p className="label-text">{diffLabels.previous} Policy</p>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -879,7 +1613,9 @@ const CISComparison = () => {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <p className="label-text">
-                      {selectedPolicy.category === "tenant_only" ? "Tenant Policy" : "Baseline Policy"}
+                      {selectedPolicy.category === "tenant_only"
+                        ? `${diffLabels.current} Policy`
+                        : `${diffLabels.previous} Policy`}
                     </p>
                     <Button
                       variant="ghost"
@@ -910,10 +1646,11 @@ const CISComparison = () => {
               Deploy to Tenant
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingAction?.type === "deploy_bulk" 
+              {pendingAction?.type === "deploy_bulk"
                 ? `This will deploy ${pendingAction.items?.length} policies from the CIS baseline to your tenant.`
-                : `This will deploy "${pendingAction?.item?.name}" to your tenant.`
-              }
+                : pendingAction?.type === "deploy_conflicting"
+                  ? `This will deploy the ${diffLabels.previous} version to your live tenant for "${getPolicyDisplayName(pendingAction.item, "conflicting")}".`
+                  : `This will deploy "${getPolicyDisplayName(pendingAction?.item, "baseline_only")}" to your tenant.`}
               <br /><br />
               <strong className="text-amber-600">Note:</strong> Conditional Access policies will be created in <strong>disabled</strong> state for safety. You'll need to enable them manually after review.
             </AlertDialogDescription>
@@ -939,10 +1676,11 @@ const CISComparison = () => {
               Remove from Tenant
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingAction?.type === "delete_bulk" 
+              {pendingAction?.type === "delete_bulk"
                 ? `This will permanently delete ${pendingAction.items?.length} policies from your tenant.`
-                : `This will permanently delete "${pendingAction?.item?.name}" from your tenant.`
-              }
+                : pendingAction?.type === "delete_matching"
+                  ? `This will remove the matching policy "${getPolicyDisplayName(pendingAction.item, "matching")}" from your live tenant.`
+                  : `This will permanently delete "${getPolicyDisplayName(pendingAction?.item, "tenant_only")}" from your tenant.`}
               <br /><br />
               <strong className="text-red-600">Warning:</strong> This action cannot be undone. Make sure you have a backup before proceeding.
             </AlertDialogDescription>
@@ -959,6 +1697,7 @@ const CISComparison = () => {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+    </TooltipProvider>
   );
 };
 
