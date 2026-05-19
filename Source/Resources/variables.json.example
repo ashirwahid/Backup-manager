@@ -1,0 +1,11 @@
+{
+  "AzureManagement:SubscriptionId": "-",
+  "ResourceContext:OnMicrosoftDomainName": "yourtenant.onmicrosoft.com",
+  "ResourceContext:SharePointDomainName": "yourtenant.sharepoint.com",
+  "ResourceContext:TenantDomainName": "yourtenant.onmicrosoft.com",
+  "ResourceContext:TenantId": "00000000-0000-0000-0000-000000000000",
+  "ResourceContext:TenantName": "yourtenant",
+  "ResourceContext:TenantShortName": "yourtena",
+  "Baseline:AdminUserId": "00000000-0000-0000-0000-000000000000",
+  "Defender:Settings:IncidentNotificationSettings:Region": "eus3"
+}
