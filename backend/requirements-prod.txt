@@ -1,0 +1,12 @@
+# Lean dependencies for Azure App Service (production).
+# Full dev/test packages remain in requirements.txt for local use.
+fastapi==0.110.1
+uvicorn==0.25.0
+python-dotenv==1.2.1
+motor==3.3.1
+pymongo==4.5.0
+httpx==0.28.1
+msal==1.35.1
+pydantic==2.12.5
+python-multipart==0.0.22
+starlette==0.37.2
