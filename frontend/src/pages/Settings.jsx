@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 
 const SettingsPage = () => {
   const [loading, setLoading] = useState(true);
@@ -38,9 +39,12 @@ const SettingsPage = () => {
     devops_repo: "",
     devops_pat: "",
     devops_branch: "main",
+    devops_remove_policy_pipeline_id: "",
+    devops_require_pipeline_for_policy_removal: false,
     github_repo_url: "",
     github_branch: "main",
-    github_baseline_path: "/",
+    github_baseline_path: "Source/Resources/Content",
+    github_variables_path: "Source/Resources/variables.json",
     github_pat: ""
   });
 
@@ -49,6 +53,8 @@ const SettingsPage = () => {
     devops_configured: false,
     github_configured: false
   });
+
+  const [lastFetchedRemovePipelineId, setLastFetchedRemovePipelineId] = useState(null);
 
   const fetchSettings = async () => {
     try {
@@ -69,8 +75,21 @@ const SettingsPage = () => {
         devops_branch: response.data.devops_branch || "main",
         github_repo_url: response.data.github_repo_url || "",
         github_branch: response.data.github_branch || "main",
-        github_baseline_path: response.data.github_baseline_path || "/"
+        github_baseline_path:
+          response.data.github_baseline_path || "Source/Resources/Content",
+        github_variables_path:
+          response.data.github_variables_path || "Source/Resources/variables.json",
+        devops_remove_policy_pipeline_id:
+          response.data.devops_remove_policy_pipeline_id != null
+            ? String(response.data.devops_remove_policy_pipeline_id)
+            : "",
+        devops_require_pipeline_for_policy_removal: !!response.data.devops_require_pipeline_for_policy_removal,
       }));
+      setLastFetchedRemovePipelineId(
+        response.data.devops_remove_policy_pipeline_id != null
+          ? response.data.devops_remove_policy_pipeline_id
+          : null
+      );
     } catch (err) {
       toast.error("Failed to fetch settings");
     } finally {
@@ -90,14 +109,35 @@ const SettingsPage = () => {
     try {
       setSaving(true);
       
-      // Only send non-empty values
       const dataToSend = {};
-      Object.keys(settings).forEach(key => {
-        if (settings[key] && settings[key].trim()) {
-          dataToSend[key] = settings[key].trim();
+      Object.keys(settings).forEach((key) => {
+        if (key === "devops_remove_policy_pipeline_id") return;
+        if (key === "devops_require_pipeline_for_policy_removal") return;
+        if (settings[key] && String(settings[key]).trim()) {
+          dataToSend[key] = String(settings[key]).trim();
         }
       });
-      
+
+      const rawPid = String(settings.devops_remove_policy_pipeline_id ?? "").trim();
+      let normalizedPipelineId = null;
+      if (rawPid === "") {
+        normalizedPipelineId = null;
+      } else {
+        const n = parseInt(rawPid, 10);
+        if (Number.isNaN(n) || n < 0) {
+          toast.error("Remove pipeline ID must be a non-negative integer or empty");
+          setSaving(false);
+          return;
+        }
+        normalizedPipelineId = n === 0 ? null : n;
+      }
+      if (normalizedPipelineId !== lastFetchedRemovePipelineId) {
+        dataToSend.devops_remove_policy_pipeline_id = normalizedPipelineId;
+      }
+
+      dataToSend.devops_require_pipeline_for_policy_removal =
+        !!settings.devops_require_pipeline_for_policy_removal;
+
       await axios.post(`${API}/settings`, dataToSend);
       toast.success("Settings saved successfully");
       fetchSettings();
@@ -394,6 +434,48 @@ const SettingsPage = () => {
           </div>
           
           <div className="space-y-2">
+            <Label htmlFor="devops_remove_policy_pipeline_id" className="label-text">
+              Policy remove pipeline (definition ID)
+            </Label>
+            <Input
+              id="devops_remove_policy_pipeline_id"
+              data-testid="devops-remove-pipeline-id-input"
+              type="number"
+              min={0}
+              value={settings.devops_remove_policy_pipeline_id}
+              onChange={(e) => handleChange("devops_remove_policy_pipeline_id", e.target.value)}
+              placeholder="e.g. 42 — optional"
+            />
+            <p className="text-[11px] text-zinc-500 leading-snug">
+              When set, Remove in CIS comparison queues this YAML pipeline instead of deleting via the app.
+              The pipeline receives variable{" "}
+              <code className="font-mono bg-zinc-100 px-1 rounded">BackupManagerPolicyRemovePayload</code>{" "}
+              (JSON with <code className="font-mono bg-zinc-100 px-1">policy_type</code> and{" "}
+              <code className="font-mono bg-zinc-100 px-1">policy_ids</code>). Configure an Azure DevOps
+              environment with approvals on the job that performs the Graph delete so removal waits for
+              sign-off. PAT needs permission to queue builds. Clear the field and save to disable routing.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-md border border-zinc-200 bg-zinc-50/50 px-3 py-3">
+            <div className="space-y-0.5 min-w-0">
+              <Label htmlFor="devops_require_pipeline_switch" className="label-text">
+                Require pipeline for policy removal
+              </Label>
+              <p className="text-[11px] text-zinc-500 leading-snug">
+                When on, this app never calls Microsoft Graph to delete policies from CIS Remove—only queues
+                the remove pipeline. Turn on after you set the definition ID above and attach an{" "}
+                <strong>Environment with Approvals</strong> to the delete job in YAML.
+              </p>
+            </div>
+            <Switch
+              id="devops_require_pipeline_switch"
+              checked={!!settings.devops_require_pipeline_for_policy_removal}
+              onCheckedChange={(v) => handleChange("devops_require_pipeline_for_policy_removal", v)}
+            />
+          </div>
+
+          <div className="space-y-2">
             <Label htmlFor="devops_pat" className="label-text">
               Personal Access Token (PAT)
             </Label>
@@ -445,7 +527,7 @@ const SettingsPage = () => {
             </h3>
             <ol className="text-xs text-zinc-600 space-y-1 list-decimal list-inside">
               <li>Go to Azure DevOps &rarr; User Settings &rarr; Personal Access Tokens</li>
-              <li>Create new token with "Code (Read & Write)" scope</li>
+              <li>Create new token with &quot;Code (Read & Write)&quot; and &quot;Build (Queue builds)&quot; if you use the remove pipeline</li>
               <li>Set expiration as needed (recommended: 90-180 days)</li>
               <li>Copy the token immediately (shown only once)</li>
               <li>Create or select a repository to store policies</li>
@@ -522,11 +604,30 @@ const SettingsPage = () => {
                 data-testid="github-baseline-path-input"
                 value={settings.github_baseline_path}
                 onChange={(e) => handleChange("github_baseline_path", e.target.value)}
-                placeholder="/ or /policies"
+                placeholder="Source/Resources/Content"
               />
             </div>
             
             <div className="space-y-2">
+              <Label htmlFor="github_variables_path" className="label-text">
+                Variables Path (Simeon variables.json)
+              </Label>
+              <Input
+                id="github_variables_path"
+                data-testid="github-variables-path-input"
+                value={settings.github_variables_path}
+                onChange={(e) => handleChange("github_variables_path", e.target.value)}
+                placeholder="Source/Resources/variables.json"
+              />
+            </div>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Deploy resolves admin@tenant placeholders using ResourceContext:TenantDomainName from variables.json.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 md:col-span-2">
               <Label htmlFor="github_pat" className="label-text">
                 Personal Access Token (optional for public repos)
               </Label>

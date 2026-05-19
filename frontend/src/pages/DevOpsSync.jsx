@@ -183,7 +183,11 @@ const DevOpsSync = () => {
             DevOps Sync
           </h1>
           <p className="text-sm text-zinc-500 mt-1">
-            Push exported policies to Azure DevOps repository
+            Push exported policies to Azure DevOps. Each push updates JSON under{" "}
+            <code className="text-xs bg-zinc-100 px-1 rounded">Source/Resources/Content/MSGraph/</code> and removes policy
+            backup files that are no longer in that export (for example after you removed policies and
+            re-exported). You can push again after a sync, or run a new export on the Policies page after
+            changing your tenant.
           </p>
         </div>
         <Button
@@ -263,23 +267,26 @@ const DevOpsSync = () => {
                           <Eye className="w-4 h-4" />
                         </Button>
                         
-                        {!exp.synced_to_devops && (
-                          <Button
-                            data-testid={`sync-export-${exp.id.substring(0, 8)}-btn`}
-                            variant="outline"
-                            size="sm"
-                            onClick={() => openSyncDialog(exp)}
-                            disabled={syncing === exp.id}
-                            className="gap-1 text-[#0052CC] border-[#0052CC] hover:bg-[#0052CC]/10"
-                          >
-                            {syncing === exp.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Upload className="w-4 h-4" />
-                            )}
-                            Push
-                          </Button>
-                        )}
+                        <Button
+                          data-testid={`sync-export-${exp.id.substring(0, 8)}-btn`}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openSyncDialog(exp)}
+                          disabled={syncing === exp.id}
+                          title={
+                            exp.synced_to_devops
+                              ? "Re-run DevOps backup for this export (commits only if files differ)"
+                              : "Push this export to Azure DevOps"
+                          }
+                          className="gap-1 text-[#0052CC] border-[#0052CC] hover:bg-[#0052CC]/10"
+                        >
+                          {syncing === exp.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Upload className="w-4 h-4" />
+                          )}
+                          {exp.synced_to_devops ? "Push again" : "Push"}
+                        </Button>
                         
                         {exp.synced_to_devops && exp.devops_commit_id && (
                           <code className="font-mono text-xs text-zinc-500">
@@ -326,6 +333,20 @@ const DevOpsSync = () => {
                 Export Details
               </SheetTitle>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (!selectedExport) return;
+                    openSyncDialog(selectedExport);
+                    setSheetOpen(false);
+                  }}
+                  disabled={!selectedExport || syncing === selectedExport?.id}
+                  className="gap-2 text-[#0052CC] border-[#0052CC] hover:bg-[#0052CC]/10"
+                >
+                  <Upload className="w-4 h-4" />
+                  {selectedExport?.synced_to_devops ? "Push again" : "Push"}
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -399,7 +420,9 @@ const DevOpsSync = () => {
               Push to Azure DevOps
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This will push the exported policies to your Azure DevOps repository.
+              {exportToSync?.synced_to_devops
+                ? "This export was already synced. A new commit is created only if your backup files differ from the repo (for example after you ran a fresh export)."
+                : "This will push the exported policies to your Azure DevOps repository."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="py-4">
