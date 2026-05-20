@@ -1,5 +1,5 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+# Build and deploy backend/ to Azure App Service (Linux Python 3.11).
+# Oryx installs requirements-prod.txt on the server into antenv.
 
 name: Build and deploy Python app to Azure Web App - backup-manager
 
@@ -18,20 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python version
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # Install into Azure's expected layout so uvicorn/fastapi exist at runtime.
-      - name: Install dependencies into .python_packages
+      - name: Validate backend deploy layout
         working-directory: backend
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-prod.txt --target=".python_packages/lib/site-packages"
+          test -f server.py
+          test -f requirements-prod.txt
+          test -f startup.sh
           chmod +x startup.sh
 
-      # Deploy only backend/ (server.py at wwwroot root).
+      # Upload only backend/ so server.py is at /home/site/wwwroot/server.py
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
@@ -60,7 +55,6 @@ jobs:
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
         with:
           app-name: backup-manager
           slot-name: Production
