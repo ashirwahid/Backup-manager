@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from "react";
+﻿import { useState, useEffect, useMemo, useCallback } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
@@ -733,11 +733,28 @@ const CISComparison = () => {
   const navigate = useNavigate();
   const { begin: beginRequest, abort: abortRequest } = useCancellableRequests();
 
+  const checkConfiguration = useCallback(async () => {
+    const signal = beginRequest("settings");
+    try {
+      setCheckingConfig(true);
+      const response = await axios.get(`${API}/settings`, { signal });
+      setGithubConfigured(response.data.github_configured);
+      setDevopsConfigured(!!response.data.devops_configured);
+    } catch (err) {
+      if (isRequestAborted(err)) return;
+      console.error("Failed to check configuration", err);
+    } finally {
+      if (!signal.aborted) {
+        setCheckingConfig(false);
+      }
+    }
+  }, [beginRequest]);
+
   useEffect(() => {
     checkConfiguration();
-  }, []);
+  }, [checkConfiguration]);
 
-  const fetchComparisonSources = async (
+  const fetchComparisonSources = useCallback(async (
     commitId,
     {
       includeInventory = false,
@@ -786,7 +803,7 @@ const CISComparison = () => {
         setSourcesLoading(false);
       }
     }
-  };
+  }, [beginRequest]);
 
   useEffect(() => {
     if (compareMode !== "tenant" || !devopsConfigured) return;
@@ -797,7 +814,13 @@ const CISComparison = () => {
         includeBaselineSnapshots: false,
       });
     }
-  }, [compareMode, devopsConfigured]);
+  }, [
+    compareMode,
+    devopsConfigured,
+    comparisonSources.tenant_snapshots.length,
+    sourcesLoading,
+    fetchComparisonSources,
+  ]);
 
   useEffect(() => {
     if (compareMode !== "tenant" || comparisonSources.tenant_snapshots.length < 2) return;
@@ -825,23 +848,6 @@ const CISComparison = () => {
     subtitle: columnLabels?.[key]?.subtitle,
     hint: columnLabels?.[key]?.hint ?? fallbackHint,
   });
-
-  const checkConfiguration = async () => {
-    const signal = beginRequest("settings");
-    try {
-      setCheckingConfig(true);
-      const response = await axios.get(`${API}/settings`, { signal });
-      setGithubConfigured(response.data.github_configured);
-      setDevopsConfigured(!!response.data.devops_configured);
-    } catch (err) {
-      if (isRequestAborted(err)) return;
-      console.error("Failed to check configuration", err);
-    } finally {
-      if (!signal.aborted) {
-        setCheckingConfig(false);
-      }
-    }
-  };
 
   const focusedPolicyId = useMemo(() => {
     if (!policyFilter.includes(":")) return null;

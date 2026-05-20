@@ -95,7 +95,7 @@ const Dashboard = () => {
         return prev;
       });
     });
-  }, [pendingFromNav, fetchStats]);
+  }, [pendingFromNav, fetchStats, sessionDeployments]);
 
   const statCards = [
     {
