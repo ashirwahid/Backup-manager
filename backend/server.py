@@ -2491,6 +2491,24 @@ async def devops_backup_after_export(export_record: Dict[str, Any]) -> Dict[str,
 async def root():
     return {"message": "MS Policy Manager API", "version": "1.0.0"}
 
+def _http_stack_health() -> Dict[str, Any]:
+    try:
+        import importlib
+
+        import httpcore
+        import httpx
+
+        importlib.import_module("httpcore._backends.sync")
+        return {
+            "ok": True,
+            "httpx": httpx.__version__,
+            "httpcore": httpcore.__version__,
+            "httpcore_file": getattr(httpcore, "__file__", None),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @api_router.get("/health")
 async def health_check():
     mongo_status = "not_configured"
@@ -2503,6 +2521,7 @@ async def health_check():
     return {
         "status": "healthy",
         "mongo": mongo_status,
+        "http": _http_stack_health(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

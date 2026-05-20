@@ -22,7 +22,8 @@ jobs:
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-prod.txt --target=".python_packages/lib/site-packages"
+          pip install -r requirements-prod.txt --target=".python_packages/lib/site-packages" --no-cache-dir
+          python -c "import importlib; importlib.import_module('httpcore._backends.sync'); import httpx; print('CI http stack ok', httpx.__version__)"
           chmod +x startup.sh
 
       # Upload backend/ with pre-built .python_packages (no pip on container boot).
