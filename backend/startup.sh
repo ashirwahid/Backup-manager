@@ -3,41 +3,20 @@ set -euo pipefail
 cd /home/site/wwwroot
 
 PACKAGES="/home/site/wwwroot/.python_packages/lib/site-packages"
-
-# Use only bundled deps — do not append Oryx antenv paths (causes httpx/httpcore mismatch).
-unset VIRTUAL_ENV
 export PYTHONNOUSERSITE=1
 export PYTHONPATH="${PACKAGES}"
+unset VIRTUAL_ENV
 
-verify_http_stack() {
-  python - <<'PY'
-import importlib
-importlib.import_module("httpcore._backends.sync")
-import httpx
-import httpcore
-print(f"http stack ok: httpx={httpx.__version__} httpcore={httpcore.__version__}")
-PY
-}
-
-install_packages() {
-  echo "Installing production Python dependencies into ${PACKAGES}..."
+# Only install on boot when the CI bundle is missing (never block on httpcore verify).
+if [ ! -d "${PACKAGES}/uvicorn" ]; then
+  echo "WARNING: .python_packages missing; installing prod deps (slow first boot)."
   mkdir -p "${PACKAGES}"
   python -m pip install --upgrade pip
-  python -m pip install --upgrade --force-reinstall \
-    -r requirements-prod.txt \
-    -t "${PACKAGES}" \
-    --no-cache-dir
-}
-
-if [ ! -d "${PACKAGES}/uvicorn" ]; then
-  echo "WARNING: .python_packages missing uvicorn; installing all prod deps."
-  install_packages
-elif ! verify_http_stack 2>/dev/null; then
-  echo "WARNING: httpx/httpcore stack broken; reinstalling pinned versions."
-  install_packages
+  python -m pip install -r requirements-prod.txt -t "${PACKAGES}" --no-cache-dir
 fi
 
-verify_http_stack
+python -c "import importlib; importlib.import_module('httpcore._backends.sync'); import httpx; print('http stack ok:', httpx.__version__)" \
+  || echo "WARN: httpcore check failed — redeploy backend with GitHub workflow bundle."
 
 echo "PYTHONPATH=${PYTHONPATH}"
 echo "Starting uvicorn on port ${WEBSITES_PORT:-8000}..."
