@@ -3394,10 +3394,10 @@ class GitHubClient:
         url = f"{self.api_base}/repos/{self.repo_url}/contents/{path}"
         params = {"ref": self.branch}
         response = await self._github_request(client, "GET", url, params=params)
-            data = response.json()
-            if data.get("encoding") == "base64":
-                return base64.b64decode(data["content"]).decode("utf-8")
-            return data.get("content", "")
+        data = response.json()
+        if data.get("encoding") == "base64":
+            return base64.b64decode(data["content"]).decode("utf-8")
+        return data.get("content", "")
     
     async def get_file_content(self, path: str) -> str:
         """Get content of a specific file"""
@@ -3456,19 +3456,19 @@ class GitHubClient:
         params = {"ref": self.branch}
         response = await self._github_request(client, "GET", url, params=params)
         contents = response.json()
-            if not isinstance(contents, list):
-                contents = [contents]
-            for item in contents:
-                if item["type"] == "file" and item["name"].endswith(".json"):
-                    try:
+        if not isinstance(contents, list):
+            contents = [contents]
+        for item in contents:
+            if item["type"] == "file" and item["name"].endswith(".json"):
+                try:
                     text = await self._get_file_content_with_client(client, item["path"])
                     json_data = json.loads(text)
                     all_files.append(
                         {"path": item["path"], "name": item["name"], "data": json_data}
                     )
-                    except (json.JSONDecodeError, Exception) as e:
+                except (json.JSONDecodeError, Exception) as e:
                     logger.warning("Failed to parse %s: %s", item.get("path"), e)
-                elif item["type"] == "dir":
+            elif item["type"] == "dir":
                 sub = await self._get_all_json_recursive(client, item["path"])
                 all_files.extend(sub)
         return all_files
