@@ -2,21 +2,40 @@
 set -euo pipefail
 cd /home/site/wwwroot
 
+# Stale Oryx artifacts on persistent /home can override a clean GitHub deploy.
+rm -f /home/site/wwwroot/output.tar.zst /home/site/wwwroot/oryx-manifest.toml 2>/dev/null || true
+
 PACKAGES="/home/site/wwwroot/.python_packages/lib/site-packages"
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="${PACKAGES}"
 unset VIRTUAL_ENV
 
-# Only install on boot when the CI bundle is missing (never block on httpcore verify).
-if [ ! -d "${PACKAGES}/uvicorn" ]; then
-  echo "WARNING: .python_packages missing; installing prod deps (slow first boot)."
+deps_ok() {
+  export PYTHONPATH="${PACKAGES}"
+  python -c "
+import importlib
+importlib.import_module('httpcore._backends.sync')
+importlib.import_module('fastapi.applications')
+import httpx
+print('deps ok: httpx', httpx.__version__)
+"
+}
+
+install_deps() {
+  echo "Installing fresh prod dependencies into ${PACKAGES}..."
+  rm -rf /home/site/wwwroot/.python_packages
   mkdir -p "${PACKAGES}"
   python -m pip install --upgrade pip
   python -m pip install -r requirements-prod.txt -t "${PACKAGES}" --no-cache-dir
-fi
+}
 
-python -c "import importlib; importlib.import_module('httpcore._backends.sync'); import httpx; print('http stack ok:', httpx.__version__)" \
-  || echo "WARN: httpcore check failed — redeploy backend with GitHub workflow bundle."
+export PYTHONPATH="${PACKAGES}"
+
+if ! deps_ok 2>/dev/null; then
+  echo "WARNING: .python_packages missing or corrupt (common after mixed Oryx/deploy installs)."
+  install_deps
+  export PYTHONPATH="${PACKAGES}"
+  deps_ok
+fi
 
 echo "PYTHONPATH=${PYTHONPATH}"
 echo "Starting uvicorn on port ${WEBSITES_PORT:-8000}..."

@@ -519,7 +519,7 @@ class MSGraphClient:
         """Get device compliance policies"""
         result = await self._make_request("/deviceManagement/deviceCompliancePolicies")
         return result.get("value", [])
-
+    
     async def get_intune_policy_assignments(
         self, policy_type: str, policy_id: str
     ) -> List[Dict]:
@@ -951,7 +951,7 @@ class MSGraphClient:
             f"Settings Catalog policy '{name}' has no settings in the backup and Graph "
             "could not load them. Re-export configuration policies, push to DevOps, and try again."
         )
-
+    
     # Configuration Policies (Settings Catalog)
     async def create_configuration_policy(
         self,
@@ -2585,13 +2585,13 @@ async def update_settings(settings_update: SettingsUpdate):
         if v is not None:
             update_data[k] = v
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-
+    
     if existing:
         await db.settings.update_one({}, {"$set": update_data})
     else:
         update_data["id"] = str(uuid.uuid4())
         await db.settings.insert_one(update_data)
-
+    
     return {"success": True, "message": "Settings updated successfully"}
 
 @api_router.post("/settings/test-azure")
@@ -3307,7 +3307,7 @@ class GitHubClient:
         self.branch = branch
         self.pat = (pat or "").strip() or None
         self.api_base = "https://api.github.com"
-
+        
     def _get_headers(self) -> Dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
@@ -3318,7 +3318,7 @@ class GitHubClient:
             # Bearer is required for fine-grained PATs; classic PATs also accept it.
             headers["Authorization"] = f"Bearer {self.pat}"
         return headers
-
+    
     def _is_github_rate_limit(self, response: httpx.Response) -> bool:
         if response.status_code == 429:
             return True
@@ -3387,18 +3387,18 @@ class GitHubClient:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await self._github_request(client, "GET", url, params=params)
             return response.json()
-
+    
     async def _get_file_content_with_client(
         self, client: httpx.AsyncClient, path: str
     ) -> str:
         url = f"{self.api_base}/repos/{self.repo_url}/contents/{path}"
         params = {"ref": self.branch}
         response = await self._github_request(client, "GET", url, params=params)
-        data = response.json()
-        if data.get("encoding") == "base64":
-            return base64.b64decode(data["content"]).decode("utf-8")
-        return data.get("content", "")
-
+            data = response.json()
+            if data.get("encoding") == "base64":
+                return base64.b64decode(data["content"]).decode("utf-8")
+            return data.get("content", "")
+    
     async def get_file_content(self, path: str) -> str:
         """Get content of a specific file"""
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -3456,19 +3456,19 @@ class GitHubClient:
         params = {"ref": self.branch}
         response = await self._github_request(client, "GET", url, params=params)
         contents = response.json()
-        if not isinstance(contents, list):
-            contents = [contents]
-        for item in contents:
-            if item["type"] == "file" and item["name"].endswith(".json"):
-                try:
+            if not isinstance(contents, list):
+                contents = [contents]
+            for item in contents:
+                if item["type"] == "file" and item["name"].endswith(".json"):
+                    try:
                     text = await self._get_file_content_with_client(client, item["path"])
                     json_data = json.loads(text)
                     all_files.append(
                         {"path": item["path"], "name": item["name"], "data": json_data}
                     )
-                except (json.JSONDecodeError, Exception) as e:
+                    except (json.JSONDecodeError, Exception) as e:
                     logger.warning("Failed to parse %s: %s", item.get("path"), e)
-            elif item["type"] == "dir":
+                elif item["type"] == "dir":
                 sub = await self._get_all_json_recursive(client, item["path"])
                 all_files.extend(sub)
         return all_files
@@ -3502,8 +3502,8 @@ class GitHubClient:
                     return await self._get_all_json_recursive(client, baseline_prefix)
                 except Exception as inner:
                     logger.error("GitHub recursive baseline fetch failed: %s", inner)
-                    raise
-
+            raise
+            
 
 async def get_github_client(baseline_ref: Optional[str] = None) -> GitHubClient:
     """Get GitHub client from stored settings; baseline_ref overrides branch (branch name or commit SHA)."""
@@ -3613,9 +3613,9 @@ def compare_policies(
 ) -> Dict:
     """
   Compare two policy sets (tenant vs baseline/CIS, or current tenant vs older tenant snapshot).
-  Returns 4 categories: tenant_only, baseline_only, conflicting, matching
+    Returns 4 categories: tenant_only, baseline_only, conflicting, matching
     """
-
+    
     def get_policy_key(policy: Dict) -> str:
         return policy_compare_key(policy, match_by_id=match_by_id)
     
@@ -3705,9 +3705,9 @@ async def get_baseline_files():
         github_client = await get_github_client()
         settings = await get_settings()
         path = settings.github_baseline_path.strip("/") if settings.github_baseline_path else ""
-
+        
         files = await github_client.get_all_json_files(path)
-
+        
         return {
             "files": [{"path": f["path"], "name": f["name"]} for f in files],
             "count": len(files)
@@ -4037,10 +4037,10 @@ async def compare_with_baseline(
 
         github_client = await get_github_client(baseline_ref_clean)
         path = settings.github_baseline_path.strip("/") if settings and settings.github_baseline_path else ""
-
+        
         baseline_files = await github_client.get_all_json_files(path)
         baseline_files = _filter_baseline_files_by_policy_type(baseline_files, policy_type)
-
+        
         baseline_policies: List[Dict[str, Any]] = []
         for file in baseline_files:
             baseline_policies.extend(_expand_baseline_file_to_policies(file))
@@ -4094,7 +4094,7 @@ async def compare_with_baseline(
             "diff_current": "Tenant",
             "diff_previous": "CIS baseline",
         }
-
+        
         return comparison
         
     except HTTPException:
@@ -4202,14 +4202,14 @@ async def deploy_policy(request: DeployPolicyRequest):
         baseline_variables = await enrich_baseline_variables_from_tenant(
             graph_client, await load_baseline_variables()
         )
-
+        
         policy = request.policy
         policy_type = infer_policy_type_from_policy(
             policy,
             explicit=request.policy_type,
             devops_backup_path=request.devops_backup_path,
         )
-
+        
         result = None
         if policy_type == "device_configuration":
             result = await graph_client.create_device_configuration(
@@ -4324,10 +4324,10 @@ async def delete_policy(request: DeletePolicyRequest):
             raise HTTPException(status_code=400, detail=REMOVAL_PIPELINE_ONLY_DETAIL)
 
         graph_client = await get_graph_client()
-
+        
         policy_type = request.policy_type
         policy_id = request.policy_id
-
+        
         success = False
         if policy_type == "device_configuration":
             success = await graph_client.delete_device_configuration(policy_id)
@@ -4339,7 +4339,7 @@ async def delete_policy(request: DeletePolicyRequest):
             success = await graph_client.delete_compliance_policy(policy_id)
         else:
             raise HTTPException(status_code=400, detail=f"Unknown policy type: {policy_type}")
-
+        
         # Log deletion
         deployment_record = {
             "id": str(uuid.uuid4()),
@@ -4350,7 +4350,7 @@ async def delete_policy(request: DeletePolicyRequest):
             "status": "success" if success else "failed",
         }
         await db.deployments.insert_one(deployment_record)
-
+        
         devops_backup: Optional[Dict[str, Any]] = None
         if success:
             try:
@@ -4375,7 +4375,7 @@ async def delete_policy(request: DeletePolicyRequest):
             "message": "Policy deleted successfully" if success else "Failed to delete policy",
             "devops_backup": devops_backup,
         }
-
+        
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:
@@ -4520,7 +4520,7 @@ async def bulk_delete_policies(request: BulkDeleteRequest):
             raise HTTPException(status_code=400, detail=REMOVAL_PIPELINE_ONLY_DETAIL)
 
         graph_client = await get_graph_client()
-
+        
         results = []
         for policy_id in ids:
             try:
@@ -4547,7 +4547,7 @@ async def bulk_delete_policies(request: BulkDeleteRequest):
         
         successful = sum(1 for r in results if r["success"])
         failed = len(results) - successful
-
+        
         successful_ids = [r["policy_id"] for r in results if r.get("success")]
         devops_backup: Optional[Dict[str, Any]] = None
         if successful_ids:

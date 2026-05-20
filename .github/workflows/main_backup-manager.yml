@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-prod.txt --target=".python_packages/lib/site-packages" --no-cache-dir
           export PYTHONPATH="$(pwd)/.python_packages/lib/site-packages"
-          python -c "import importlib; importlib.import_module('httpcore._backends.sync'); import httpx; print('CI http stack ok', httpx.__version__)"
+          python -c "import importlib; importlib.import_module('httpcore._backends.sync'); importlib.import_module('fastapi.applications'); import httpx; print('CI deps ok', httpx.__version__)"
           chmod +x startup.sh
 
       # Upload backend/ with pre-built .python_packages (no pip on container boot).
