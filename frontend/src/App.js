@@ -21,7 +21,7 @@ import DevOpsSync from "@/pages/DevOpsSync";
 import SettingsPage from "@/pages/Settings";
 import CISComparison from "@/pages/CISComparison";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
 export const API = `${BACKEND_URL}/api`;
 
 // Sidebar Navigation
