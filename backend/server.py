@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from contextlib import asynccontextmanager
 import contextlib
 import os
 import re
@@ -54,13 +55,33 @@ from policy_resource_layout import (
     ui_breadcrumb_label,
 )
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# MongoDB (connected on startup via lifespan so uvicorn can boot even if DB is unreachable)
+mongo_url = os.environ.get("MONGO_URL", "").strip()
+db_name = os.environ.get("DB_NAME", "backup_manager").strip()
+client: Optional[AsyncIOMotorClient] = None
+db = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global client, db
+    if not mongo_url:
+        logging.error("MONGO_URL is not set. Persistence endpoints will fail.")
+    else:
+        client = AsyncIOMotorClient(mongo_url)
+        db = client[db_name]
+        try:
+            await client.admin.command("ping")
+            logging.info("MongoDB connected (%s)", db_name)
+        except Exception as exc:
+            logging.error("MongoDB ping failed: %s", exc)
+    yield
+    if client is not None:
+        client.close()
+
 
 # Create the main app
-app = FastAPI(title="MS Policy Manager API")
+app = FastAPI(title="MS Policy Manager API", lifespan=lifespan)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -2468,7 +2489,18 @@ async def root():
 
 @api_router.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    mongo_status = "not_configured"
+    if client is not None:
+        try:
+            await client.admin.command("ping")
+            mongo_status = "connected"
+        except Exception as exc:
+            mongo_status = f"error: {exc}"
+    return {
+        "status": "healthy",
+        "mongo": mongo_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 # Settings Endpoints
 @api_router.get("/settings")
@@ -4534,15 +4566,12 @@ async def get_deployment_history():
 # Include the router
 app.include_router(api_router)
 
+_cors_raw = os.environ.get("CORS_ORIGINS", "*").strip()
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
