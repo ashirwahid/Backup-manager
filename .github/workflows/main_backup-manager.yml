@@ -18,15 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate backend deploy layout
+      - name: Install Python dependencies for App Service
         working-directory: backend
         run: |
-          test -f server.py
-          test -f requirements-prod.txt
-          test -f startup.sh
+          python -m pip install --upgrade pip
+          pip install -r requirements-prod.txt --target=".python_packages/lib/site-packages"
           chmod +x startup.sh
 
-      # Upload only backend/ so server.py is at /home/site/wwwroot/server.py
+      # Upload backend/ with pre-built .python_packages (no pip on container boot).
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
@@ -56,5 +55,5 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: backup-manager
+          app-name: backup-manager-dxf7fbaah4e9dtd8
           slot-name: Production

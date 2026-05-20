@@ -3,15 +3,14 @@ set -euo pipefail
 cd /home/site/wwwroot
 
 PACKAGES="/home/site/wwwroot/.python_packages/lib/site-packages"
-mkdir -p "$PACKAGES"
+export PYTHONPATH="${PACKAGES}:${PYTHONPATH:-}"
 
-# Install deps if missing (e.g. Oryx used an empty antenv).
 if [ ! -d "$PACKAGES/uvicorn" ]; then
-  echo "Installing Python packages from requirements-prod.txt..."
+  echo "WARNING: .python_packages missing; installing (slow). Prefer GitHub deploy with bundled deps."
+  mkdir -p "$PACKAGES"
   python -m pip install --upgrade pip
   python -m pip install -r requirements-prod.txt -t "$PACKAGES"
 fi
 
-export PYTHONPATH="${PACKAGES}:${PYTHONPATH:-}"
-echo "PYTHONPATH=${PYTHONPATH}"
-exec python -m uvicorn server:app --host 0.0.0.0 --port 8000
+echo "Starting uvicorn on port ${WEBSITES_PORT:-8000}..."
+exec python -m uvicorn server:app --host 0.0.0.0 --port "${WEBSITES_PORT:-8000}"

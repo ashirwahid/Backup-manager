@@ -68,13 +68,17 @@ async def lifespan(app: FastAPI):
     if not mongo_url:
         logging.error("MONGO_URL is not set. Persistence endpoints will fail.")
     else:
-        client = AsyncIOMotorClient(mongo_url)
+        client = AsyncIOMotorClient(
+            mongo_url,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
         db = client[db_name]
         try:
-            await client.admin.command("ping")
+            await asyncio.wait_for(client.admin.command("ping"), timeout=5.0)
             logging.info("MongoDB connected (%s)", db_name)
         except Exception as exc:
-            logging.error("MongoDB ping failed: %s", exc)
+            logging.error("MongoDB ping failed (API will still start): %s", exc)
     yield
     if client is not None:
         client.close()
