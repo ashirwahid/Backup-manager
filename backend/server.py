@@ -4567,15 +4567,26 @@ async def get_deployment_history():
     return {"deployments": deployments, "count": len(deployments)}
 
 
-# Include the router
-app.include_router(api_router)
+def _parse_cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS", "*").strip()
+    origins: list[str] = []
+    for part in raw.split(","):
+        origin = part.strip().strip('"').strip("'")
+        if origin:
+            origins.append(origin)
+    return origins or ["*"]
 
-_cors_raw = os.environ.get("CORS_ORIGINS", "*").strip()
-_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] or ["*"]
+
+_cors_origins = _parse_cors_origins()
+logger.info("CORS allow_origins: %s", _cors_origins)
+# Frontend uses axios without cookies; credentials + "*" breaks CORS in browsers.
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include the router
+app.include_router(api_router)
